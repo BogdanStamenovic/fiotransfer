@@ -279,7 +279,7 @@ _fiotransfer_upload() {
     local key_pattern='"key"[[:space:]]*:[[:space:]]*"([^\"]+)"'
     local error_pattern='"message"[[:space:]]*:[[:space:]]*"([^\"]+)"'
 
-    if ! response=$(curl --progress-bar --show-error --fail-with-body \
+    if ! response=$(curl --verbose --progress-bar --show-error --fail-with-body \
         --form "file=@${upload_file}" https://file.io); then
         if [[ $response =~ $error_pattern ]]; then
             printf 'fiotransfer: %s\n' "${BASH_REMATCH[1]}" >&2
