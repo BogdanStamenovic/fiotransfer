@@ -41,12 +41,17 @@ Upload a file:
 
 ```console
 $ fiotransfer archive.zip
+Uploading archive.zip (24 MiB). Progress below is for the complete file.
 ######################################################################## 100.0%
+Upload complete.
 Code: Ab3-xY9
 Download with: fioget Ab3-xY9
 ```
 
-An upload progress bar is displayed while the file is being transferred.
+An upload progress bar is displayed while the file is being transferred. For
+large files, `fiotransfer` also identifies each preparation and upload phase,
+shows a progress bar while copying each temporary part, and makes clear that
+the network progress applies to the current part.
 
 Download it using the original filename:
 
@@ -83,7 +88,8 @@ who has it can download the file.
 Files larger than 1.5 GiB are uploaded as a chain of approximately 1.5 GiB
 pieces. The first piece is uploaded normally. Every later piece contains the
 download code for the preceding piece plus its own data, so the code printed at
-the end is the only code that needs to be shared.
+the end is the only code that needs to be shared. Preparing a part requires a
+temporary local copy; its progress is displayed separately from its upload.
 
 For example, a three-piece upload works like this:
 

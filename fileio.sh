@@ -81,8 +81,8 @@ fiotransfer() {
     # can be lowered for such plans (or for testing) without changing the
     # share-code format.
     local chunk_size=${FIOTRANSFER_CHUNK_SIZE_BYTES:-1610612736}
-    local file_size offset payload_size header_size part_number temp_dir wrapper
-    local encoded_name base_name
+    local file_size offset payload_size header_size part_number part_count temp_dir wrapper
+    local encoded_name base_name file_size_mib
 
     if [[ ! $chunk_size =~ ^[1-9][0-9]*$ ]]; then
         printf 'fiotransfer: FIOTRANSFER_CHUNK_SIZE_BYTES must be a positive integer\n' >&2
@@ -92,11 +92,15 @@ fiotransfer() {
         printf 'fiotransfer: could not determine file size\n' >&2
         return 1
     fi
+    file_size_mib=$(( (file_size + 1048575) / 1048576 ))
 
     if (( file_size <= chunk_size )); then
+        printf 'Uploading %s (%d MiB). Progress below is for the complete file.\n' \
+            "${file##*/}" "$file_size_mib" >&2
         if ! key=$(_fiotransfer_upload "$file"); then
             return 1
         fi
+        printf 'Upload complete.\n' >&2
     else
         if ! command -v base64 >/dev/null 2>&1 || ! command -v dd >/dev/null 2>&1; then
             printf 'fiotransfer: base64 and dd are required for multipart uploads\n' >&2
@@ -111,17 +115,29 @@ fiotransfer() {
         encoded_name=$(printf '%s' "$base_name" | base64 | tr -d '\n')
         offset=0
         part_number=1
+        part_count=$(( (file_size + chunk_size - 1) / chunk_size ))
+
+        printf 'Large file detected: %s (%d MiB).\n' "$base_name" "$file_size_mib" >&2
+        printf 'Preparing and uploading approximately %d parts, one at a time.\n' \
+            "$part_count" >&2
 
         # The first object is the first raw piece.  Each following object
         # carries the code for its predecessor in a small binary-safe header.
         payload_size=$chunk_size
         if (( payload_size > file_size )); then payload_size=$file_size; fi
         wrapper=${temp_dir}/part
-        if ! dd if="$file" of="$wrapper" iflag=skip_bytes,count_bytes \
-            skip=$offset count=$payload_size status=none || ! key=$(_fiotransfer_upload "$wrapper"); then
+        if ! _fiotransfer_stage_part "$file" "$wrapper" "$offset" \
+            "$payload_size" 0 "$part_number" "$part_count"; then
+            printf 'fiotransfer: failed to prepare part %d\n' "$part_number" >&2
+            return 1
+        fi
+        printf 'Uploading part %d/%d. Progress below is for this part.\n' \
+            "$part_number" "$part_count" >&2
+        if ! key=$(_fiotransfer_upload "$wrapper"); then
             printf 'fiotransfer: failed to upload part %d\n' "$part_number" >&2
             return 1
         fi
+        printf 'Part %d/%d uploaded.\n' "$part_number" "$part_count" >&2
         offset=$((offset + payload_size))
 
         while (( offset < file_size )); do
@@ -133,13 +149,21 @@ fiotransfer() {
                 printf 'fiotransfer: chunk size is too small for multipart metadata\n' >&2
                 return 2
             fi
+            part_count=$((part_number - 1 + \
+                (file_size - offset + payload_size - 1) / payload_size))
             if (( payload_size > file_size - offset )); then payload_size=$((file_size - offset)); fi
-            if ! dd if="$file" of="$wrapper" oflag=append conv=notrunc \
-                iflag=skip_bytes,count_bytes skip=$offset count=$payload_size status=none || \
-                ! key=$(_fiotransfer_upload "$wrapper"); then
+            if ! _fiotransfer_stage_part "$file" "$wrapper" "$offset" \
+                "$payload_size" 1 "$part_number" "$part_count"; then
+                printf 'fiotransfer: failed to prepare part %d\n' "$part_number" >&2
+                return 1
+            fi
+            printf 'Uploading part %d/%d. Progress below is for this part.\n' \
+                "$part_number" "$part_count" >&2
+            if ! key=$(_fiotransfer_upload "$wrapper"); then
                 printf 'fiotransfer: failed to upload part %d\n' "$part_number" >&2
                 return 1
             fi
+            printf 'Part %d/%d uploaded.\n' "$part_number" "$part_count" >&2
             offset=$((offset + payload_size))
         done
         trap - RETURN
@@ -149,6 +173,69 @@ fiotransfer() {
 
     printf 'Code: %s\n' "$key"
     printf 'Download with: fioget %q\n' "$key"
+}
+
+# Copy a range into the temporary upload object and show progress while dd is
+# running. The append flag is used for chained parts that already have a small
+# metadata header.
+_fiotransfer_stage_part() {
+    local input=$1 output=$2 offset=$3 count=$4 append=$5 part=$6 total=$7
+    local initial_size=0 current_size copied percent filled bar dd_pid dd_status
+    local signal_status=0 saved_int saved_term
+
+    if (( append )); then
+        initial_size=$(stat -c %s -- "$output") || return 1
+        dd if="$input" of="$output" oflag=append conv=notrunc \
+            iflag=skip_bytes,count_bytes skip="$offset" count="$count" status=none &
+    else
+        dd if="$input" of="$output" iflag=skip_bytes,count_bytes \
+            skip="$offset" count="$count" status=none &
+    fi
+    dd_pid=$!
+    saved_int=$(trap -p INT)
+    saved_term=$(trap -p TERM)
+    trap 'signal_status=130; kill -TERM "$dd_pid" 2>/dev/null' INT
+    trap 'signal_status=143; kill -TERM "$dd_pid" 2>/dev/null' TERM
+
+    while kill -0 "$dd_pid" 2>/dev/null; do
+        if [[ -f $output ]]; then
+            current_size=$(stat -c %s -- "$output") || current_size=$initial_size
+        else
+            current_size=$initial_size
+        fi
+        copied=$((current_size - initial_size))
+        if (( copied < 0 )); then copied=0; fi
+        if (( copied > count )); then copied=$count; fi
+        percent=$((copied * 100 / count))
+        filled=$((percent * 40 / 100))
+        printf -v bar '%*s' "$filled" ''
+        bar=${bar// /#}
+        printf '\rPreparing part %d/%d: [%-40s] %3d%% (%d/%d MiB)' \
+            "$part" "$total" "$bar" "$percent" \
+            "$((copied / 1048576))" "$(( (count + 1048575) / 1048576 ))" >&2
+        sleep 0.2
+    done
+
+    if wait "$dd_pid"; then
+        dd_status=0
+    else
+        dd_status=$?
+    fi
+    if (( signal_status != 0 )); then dd_status=$signal_status; fi
+    if [[ -n $saved_int ]]; then eval "$saved_int"; else trap - INT; fi
+    if [[ -n $saved_term ]]; then eval "$saved_term"; else trap - TERM; fi
+
+    if (( dd_status == 0 )); then
+        printf -v bar '%*s' 40 ''
+        bar=${bar// /#}
+        printf '\rPreparing part %d/%d: [%-40s] 100%% (%d/%d MiB)\n' \
+            "$part" "$total" "$bar" \
+            "$(( (count + 1048575) / 1048576 ))" \
+            "$(( (count + 1048575) / 1048576 ))" >&2
+    else
+        printf '\n' >&2
+    fi
+    return "$dd_status"
 }
 
 fioget() {
