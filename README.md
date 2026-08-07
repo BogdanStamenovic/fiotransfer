@@ -3,6 +3,7 @@
 Two small Bash commands for transferring files through [file.io](https://file.io):
 
 - `fiotransfer FILE` uploads a file and prints a compact share code.
+- `fiotransfer uninstall` removes an installer-managed installation.
 - `fioget CODE_OR_URL [OUTPUT_FILE]` downloads it.
 
 Instead of copying a complete URL such as `https://file.io/Ab3-xY9`, you can
@@ -17,20 +18,18 @@ service.
 
 ## Installation
 
-Clone the repository:
+Clone the repository and run the installer:
 
 ```bash
-git clone https://github.com/BogdanStamenovic/fiotransfer.git \
-    ~/.local/share/fiotransfer
+git clone https://github.com/BogdanStamenovic/fiotransfer.git
+cd fiotransfer
+./install.sh
 ```
 
-Add this line to `~/.bashrc`:
-
-```bash
-source "$HOME/.local/share/fiotransfer/fileio.sh"
-```
-
-Reload the shell:
+The installer copies `fileio.sh` to
+`${XDG_DATA_HOME:-$HOME/.local/share}/fiotransfer/`, adds a marked source block
+to `~/.bashrc`, and can safely be run again to update an existing installation.
+Open a new terminal or reload the current shell:
 
 ```bash
 source ~/.bashrc
@@ -88,11 +87,15 @@ security properties are appropriate for it.
 
 ## Uninstall
 
-Remove the `source` line from `~/.bashrc`, then delete the cloned directory:
+Run the built-in uninstaller:
 
 ```bash
-rm -r "$HOME/.local/share/fiotransfer"
+fiotransfer uninstall
 ```
+
+It displays the affected paths and requires confirmation. It removes only the
+installed script and the block managed in `~/.bashrc`; it does not delete the
+cloned repository.
 
 ## License
 

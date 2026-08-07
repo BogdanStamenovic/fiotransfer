@@ -3,11 +3,69 @@
 
 fiotransfer() {
     if (( $# != 1 )); then
-        printf 'Usage: fiotransfer FILE\n' >&2
+        printf 'Usage: fiotransfer FILE\n       fiotransfer uninstall\n' >&2
         return 2
     fi
 
     local file=$1 response key key_pattern error error_pattern
+
+    if [[ $file == uninstall ]]; then
+        local answer bashrc=${HOME}/.bashrc data_home install_dir install_file
+        local start_marker='# >>> fiotransfer >>>'
+        local end_marker='# <<< fiotransfer <<<'
+        local temp_file
+
+        data_home=${XDG_DATA_HOME:-"${HOME}/.local/share"}
+        install_dir=${data_home}/fiotransfer
+        install_file=${install_dir}/fileio.sh
+
+        printf 'This will remove fiotransfer from %s and %s.\n' \
+            "$install_dir" "$bashrc"
+        printf 'Are you sure? [y/N] '
+        if ! read -r answer </dev/tty; then
+            printf '\nfiotransfer: unable to read confirmation; not uninstalled\n' >&2
+            return 1
+        fi
+
+        case ${answer,,} in
+            y|yes) ;;
+            *)
+                printf 'Uninstall cancelled.\n'
+                return 0
+                ;;
+        esac
+
+        if [[ -f $bashrc ]] && grep -Fqx "$start_marker" "$bashrc" && \
+            grep -Fqx "$end_marker" "$bashrc"; then
+            if ! temp_file=$(mktemp "${bashrc}.fiotransfer.XXXXXX"); then
+                printf 'fiotransfer: could not create a temporary file\n' >&2
+                return 1
+            fi
+            if ! awk -v start="$start_marker" -v end="$end_marker" '
+                $0 == start { managed = 1; next }
+                $0 == end   { managed = 0; next }
+                !managed    { print }
+            ' "$bashrc" >"$temp_file"; then
+                rm -f -- "$temp_file"
+                printf 'fiotransfer: could not update %s\n' "$bashrc" >&2
+                return 1
+            fi
+            chmod --reference="$bashrc" "$temp_file" 2>/dev/null || true
+            if ! mv -- "$temp_file" "$bashrc"; then
+                rm -f -- "$temp_file"
+                printf 'fiotransfer: could not update %s\n' "$bashrc" >&2
+                return 1
+            fi
+        fi
+
+        rm -f -- "$install_file"
+        rmdir -- "$install_dir" 2>/dev/null || true
+
+        printf 'fiotransfer has been uninstalled. Restart the shell to finish.\n'
+        unset -f fioget
+        unset -f fiotransfer
+        return 0
+    fi
 
     if [[ ! -f $file ]]; then
         printf 'fiotransfer: not a regular file: %s\n' "$file" >&2
