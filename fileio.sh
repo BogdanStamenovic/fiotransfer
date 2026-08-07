@@ -77,26 +77,74 @@ fiotransfer() {
         return 127
     fi
 
-    if ! response=$(curl --silent --show-error --fail-with-body \
-        --form "file=@${file}" https://file.io); then
-        printf 'fiotransfer: upload failed\n' >&2
+    # file.io's free-tier limit is smaller than this at times.  The chunk size
+    # can be lowered for such plans (or for testing) without changing the
+    # share-code format.
+    local chunk_size=${FIOTRANSFER_CHUNK_SIZE_BYTES:-1610612736}
+    local file_size offset payload_size header_size part_number temp_dir wrapper
+    local encoded_name base_name
+
+    if [[ ! $chunk_size =~ ^[1-9][0-9]*$ ]]; then
+        printf 'fiotransfer: FIOTRANSFER_CHUNK_SIZE_BYTES must be a positive integer\n' >&2
+        return 2
+    fi
+    if ! file_size=$(wc -c < "$file"); then
+        printf 'fiotransfer: could not determine file size\n' >&2
         return 1
     fi
 
-    # The API returns JSON. A file.io key cannot contain a double quote, so a
-    # small Bash match avoids requiring jq or Python just to read the key.
-    key_pattern='"key"[[:space:]]*:[[:space:]]*"([^\"]+)"'
-    if [[ $response =~ $key_pattern ]]; then
-        key=${BASH_REMATCH[1]}
-    else
-        error_pattern='"message"[[:space:]]*:[[:space:]]*"([^\"]+)"'
-        if [[ $response =~ $error_pattern ]]; then
-            error=${BASH_REMATCH[1]}
-            printf 'fiotransfer: %s\n' "$error" >&2
-        else
-            printf 'fiotransfer: file.io returned an unexpected response\n' >&2
+    if (( file_size <= chunk_size )); then
+        if ! key=$(_fiotransfer_upload "$file"); then
+            return 1
         fi
-        return 1
+    else
+        if ! command -v base64 >/dev/null 2>&1 || ! command -v dd >/dev/null 2>&1; then
+            printf 'fiotransfer: base64 and dd are required for multipart uploads\n' >&2
+            return 127
+        fi
+        if ! temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/fiotransfer.XXXXXX"); then
+            printf 'fiotransfer: could not create temporary directory\n' >&2
+            return 1
+        fi
+        trap 'rm -rf -- "$temp_dir"' RETURN
+        base_name=${file##*/}
+        encoded_name=$(printf '%s' "$base_name" | base64 | tr -d '\n')
+        offset=0
+        part_number=1
+
+        # The first object is the first raw piece.  Each following object
+        # carries the code for its predecessor in a small binary-safe header.
+        payload_size=$chunk_size
+        if (( payload_size > file_size )); then payload_size=$file_size; fi
+        wrapper=${temp_dir}/part
+        if ! dd if="$file" of="$wrapper" iflag=skip_bytes,count_bytes \
+            skip=$offset count=$payload_size status=none || ! key=$(_fiotransfer_upload "$wrapper"); then
+            printf 'fiotransfer: failed to upload part %d\n' "$part_number" >&2
+            return 1
+        fi
+        offset=$((offset + payload_size))
+
+        while (( offset < file_size )); do
+            part_number=$((part_number + 1))
+            printf 'FIOTRANSFER-CHAIN-V1\n%s\n%s\n\n' "$key" "$encoded_name" >"$wrapper"
+            header_size=$(wc -c < "$wrapper")
+            payload_size=$((chunk_size - header_size))
+            if (( payload_size <= 0 )); then
+                printf 'fiotransfer: chunk size is too small for multipart metadata\n' >&2
+                return 2
+            fi
+            if (( payload_size > file_size - offset )); then payload_size=$((file_size - offset)); fi
+            if ! dd if="$file" of="$wrapper" oflag=append conv=notrunc \
+                iflag=skip_bytes,count_bytes skip=$offset count=$payload_size status=none || \
+                ! key=$(_fiotransfer_upload "$wrapper"); then
+                printf 'fiotransfer: failed to upload part %d\n' "$part_number" >&2
+                return 1
+            fi
+            offset=$((offset + payload_size))
+        done
+        trap - RETURN
+        rm -rf -- "$temp_dir"
+        printf 'Uploaded %d chained parts.\n' "$part_number" >&2
     fi
 
     printf 'Code: %s\n' "$key"
@@ -130,12 +178,121 @@ fioget() {
         return 2
     fi
 
-    url="https://file.io/${code}"
     if (( $# == 2 )); then
-        curl --fail --location --show-error --output "$2" "$url"
+        _fiotransfer_download_chain "$code" "$2"
     else
-        # Use the filename supplied by file.io when no output name is given.
-        curl --fail --location --show-error \
-            --remote-header-name --remote-name "$url"
+        _fiotransfer_download_chain "$code"
     fi
+}
+
+# Upload one file and write only its file.io key to stdout.  Keeping progress
+# on stderr makes this safe to use while constructing a multipart chain.
+_fiotransfer_upload() {
+    local upload_file=$1 response key error
+    local key_pattern='"key"[[:space:]]*:[[:space:]]*"([^\"]+)"'
+    local error_pattern='"message"[[:space:]]*:[[:space:]]*"([^\"]+)"'
+
+    if ! response=$(curl --progress-bar --show-error --fail-with-body \
+        --form "file=@${upload_file}" https://file.io); then
+        if [[ $response =~ $error_pattern ]]; then
+            printf 'fiotransfer: %s\n' "${BASH_REMATCH[1]}" >&2
+        else
+            printf 'fiotransfer: upload failed\n' >&2
+        fi
+        return 1
+    fi
+    if [[ $response =~ $key_pattern ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+    if [[ $response =~ $error_pattern ]]; then error=${BASH_REMATCH[1]}; fi
+    printf 'fiotransfer: %s\n' "${error:-file.io returned an unexpected response}" >&2
+    return 1
+}
+
+_fiotransfer_download_chain() {
+    local code=$1 requested_output=${2-} temp_dir node headers magic previous encoded_name blank
+    local header_size output decoded_name remote_name idx
+    local -a parts=()
+    local -A seen=()
+
+    if ! temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/fioget.XXXXXX"); then
+        printf 'fioget: could not create temporary directory\n' >&2
+        return 1
+    fi
+    trap 'rm -rf -- "$temp_dir"' RETURN
+
+    while :; do
+        if [[ ${seen[$code]+yes} ]]; then
+            printf 'fioget: invalid multipart chain (repeated code)\n' >&2
+            return 1
+        fi
+        seen[$code]=1
+        node=${temp_dir}/node
+        headers=${temp_dir}/headers
+        if ! curl --fail --location --show-error --dump-header "$headers" --output "$node" "https://file.io/${code}"; then
+            return 1
+        fi
+        IFS= read -r magic <"$node" || magic=
+        if [[ $magic != FIOTRANSFER-CHAIN-V1 ]]; then
+            parts+=("$node")
+            break
+        fi
+        {
+            IFS= read -r magic
+            IFS= read -r previous
+            IFS= read -r encoded_name
+            IFS= read -r blank
+        } <"$node"
+        if [[ -z $previous || -n $blank || ! $previous =~ ^[A-Za-z0-9_-]+$ || -z $encoded_name ]]; then
+            printf 'fioget: invalid multipart header\n' >&2
+            return 1
+        fi
+        header_size=$(( ${#magic} + ${#previous} + ${#encoded_name} + 4 ))
+        node=${temp_dir}/part.${#parts[@]}
+        if ! dd if="${temp_dir}/node" of="$node" iflag=skip_bytes skip=$header_size status=none; then
+            printf 'fioget: could not unpack multipart data\n' >&2
+            return 1
+        fi
+        parts+=("$node")
+        code=$previous
+    done
+
+    if [[ -n $requested_output ]]; then
+        output=$requested_output
+    elif (( ${#parts[@]} == 1 )); then
+        # We already fetched this one-time file.io object while checking for a
+        # chain, so use its Content-Disposition filename instead of fetching it
+        # again (which would consume the link a second time).
+        remote_name=$(awk 'BEGIN { IGNORECASE=1 }
+            /^Content-Disposition:/ {
+                if (match($0, /filename="[^"]+"/)) {
+                    value=substr($0, RSTART + 10, RLENGTH - 11)
+                }
+            }
+            END { print value }' "$headers")
+        output=${remote_name##*/}
+        if [[ -z $output || $output == . || $output == .. ]]; then output=download; fi
+    else
+        if ! decoded_name=$(printf '%s' "$encoded_name" | base64 -d 2>/dev/null); then
+            printf 'fioget: invalid original filename in multipart header\n' >&2
+            return 1
+        fi
+        output=${decoded_name##*/}
+        if [[ -z $output || $output == . || $output == .. ]]; then output=download; fi
+    fi
+
+    if ! : >"$output"; then
+        printf 'fioget: could not write %s\n' "$output" >&2
+        return 1
+    fi
+    for (( idx=${#parts[@]} - 1; idx >= 0; idx-- )); do
+        if ! cat "${parts[idx]}" >>"$output"; then
+            printf 'fioget: could not assemble %s\n' "$output" >&2
+            return 1
+        fi
+    done
+    trap - RETURN
+    rm -rf -- "$temp_dir"
+    printf 'Downloaded and assembled %d parts into %s\n' "${#parts[@]}" "$output"
 }
