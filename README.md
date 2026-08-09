@@ -1,20 +1,26 @@
 # fiotransfer
 
-Two small Bash commands for transferring files through [file.io](https://file.io):
+Two small Bash commands for transferring files through anonymous temporary
+file hosts:
 
 - `fiotransfer FILE` uploads a file and prints a compact share code.
 - `fiotransfer uninstall` removes an installer-managed installation.
-- `fioget CODE_OR_URL [OUTPUT_FILE]` downloads it, assembling large uploads automatically.
+- `fioget CODE_OR_URL [OUTPUT_FILE]` downloads it, assembling large and
+  multi-provider uploads automatically.
 
-Instead of copying a complete URL such as `https://file.io/Ab3-xY9`, you can
-share only `Ab3-xY9`. The code is the random file.io key with the predictable
-URL prefix removed, so it is lossless and requires no additional lookup
-service.
+The uploader currently supports [file.io](https://www.file.io/developers),
+[temp.sh](https://temp.sh/), and [0x0.st](https://0x0.st/). It measures their
+endpoint latency at the start of an upload, balances that latency against how
+many parts each service would need, respects known object and hourly limits,
+and automatically retries a part through another provider if an upload fails.
+The result is still one compact code, regardless of how many providers or
+parts were used.
 
 ## Requirements
 
-- Bash
+- Bash 4 or newer
 - curl
+- GNU coreutils (`base64`, `dd`, `stat`, and `wc`)
 
 ## Installation
 
@@ -41,9 +47,11 @@ Upload a file:
 
 ```console
 $ fiotransfer archive.zip
-Uploading archive.zip (24 MiB). Progress below is for the complete file.
+Uploading archive.zip (24 MiB) with automatic provider fallback.
+Uploading part 1 through fileio (24 MiB).
 ######################################################################## 100.0%
-Upload complete.
+Part 1 uploaded through fileio.
+Upload complete (1 part(s)).
 Code: Ab3-xY9
 Download with: fioget Ab3-xY9
 ```
@@ -65,7 +73,7 @@ Choose a different output filename:
 fioget Ab3-xY9 received.zip
 ```
 
-`fioget` also accepts a complete file.io URL:
+`fioget` also accepts complete HTTPS URLs from supported providers:
 
 ```bash
 fioget https://file.io/Ab3-xY9
@@ -75,52 +83,87 @@ Run either command without arguments to see its usage summary.
 
 ## How it works
 
-`fiotransfer` sends a multipart upload to the file.io API and extracts the
-returned key. `fioget` reconstructs the API URL from that key, follows the
-download redirect, and uses file.io's suggested filename unless an output
-filename is supplied.
+`fiotransfer` sends multipart-form uploads to the providers' public anonymous
+APIs. A short prefix identifies non-file.io codes (`t:` for temp.sh and `z:`
+for 0x0.st). Existing bare file.io keys remain valid. `fioget` resolves the
+code, follows redirects, and uses the service's suggested filename unless an
+output filename is supplied.
 
 The code is not encryption and should be treated like the full link: anyone
 who has it can download the file.
 
-## Large files
+## Routing, limits, and large files
 
-Files larger than 1.5 GiB are uploaded as a chain of approximately 1.5 GiB
-pieces. The first piece is uploaded normally. Every later piece contains the
-download code for the preceding piece plus its own data, so the code printed at
-the end is the only code that needs to be shared. Preparing a part requires a
-temporary local copy; its progress is displayed separately from its upload.
+Each provider declares a maximum object size. file.io also publishes a 4 GB
+rolling-hour upload limit, so fiotransfer records its own successful file.io
+uploads under `${XDG_STATE_HOME:-$HOME/.local/state}/fiotransfer/usage`. The
+record is a best-effort local view: uploads made by another program or device
+are discovered when file.io rejects a part, at which point the transfer falls
+back automatically.
 
-For example, a three-piece upload works like this:
+The defaults reflect the providers' published limits as of August 2026:
+
+| Provider | Per-object limit used | Hourly limit used | Retention behavior |
+| --- | ---: | ---: | --- |
+| file.io | 2 GB | 4 GB | Deleted after first download on the free plan |
+| temp.sh | 4 GB | Not published | Three days |
+| 0x0.st | 512 MiB | Not published | Size-dependent, at least 30 days |
+
+These are independent services with different privacy and acceptable-use
+policies. Codes are access credentials, not encryption. Do not upload content
+unless every enabled provider's terms, privacy, retention, and security
+properties are appropriate for it.
+
+When the file does not fit one object or a faster provider exhausts its known
+allowance, fiotransfer uploads a reverse chain. The first piece is raw data.
+Every later piece contains the provider-aware code for the preceding piece plus
+its own data, so only the final code needs to be shared. For example, a
+three-piece upload works like this:
 
 ```text
-piece 1 -> code A
-piece 2 (contains A) -> code B
-piece 3 (contains B) -> code C   <- share this code
+piece 1 on file.io -> code A
+piece 2 on file.io (contains A) -> code B
+piece 3 on temp.sh (contains B) -> code C   <- share this code
 ```
 
-`fioget C` downloads the pieces in reverse chain order and writes the original
-file back in the correct order. This needs temporary disk space while it is
-assembling the download. The default piece size can be changed, for example for
-testing or for a lower service limit:
+`fioget C` follows the provider locators in reverse order and writes the
+original bytes back in the correct order. This needs temporary disk space while
+assembling the download.
+
+Provider order can be restricted or changed. Order breaks equal routing-score
+ties; measured latency and required part count otherwise decide which eligible
+provider is tried first:
+
+```bash
+FIOTRANSFER_PROVIDERS=temp,fileio fiotransfer large.iso
+```
+
+The maximum part size can be lowered for testing or constrained temporary
+storage. It never raises a provider's own limit:
 
 ```bash
 FIOTRANSFER_CHUNK_SIZE_BYTES=$((500 * 1024 * 1024)) fiotransfer large.iso
 ```
 
-## file.io limits
+For an isolated test that must not affect normal quota history, set
+`FIOTRANSFER_STATE_HOME` to another directory.
 
-Limits and retention are controlled by file.io, not this script. At the time
-of writing, files uploaded under the free plan are automatically deleted after
-their first download. Consult the [file.io plans](https://www.file.io/plans)
-and [API documentation](https://www.file.io/developers) for current details.
+## One-time-link warning
 
-Multipart uploads consume one one-time link for every piece during assembly.
-Consequently, a failed or interrupted multipart download may make the shared
-code unusable and require a fresh upload.
+Every file.io part is a one-time link. A multipart download consumes those
+links as it walks the chain. Consequently, a failed or interrupted download
+may make the final code unusable and require a fresh upload. temp.sh and 0x0.st
+have different retention rules, but they do not make a mixed chain recoverable
+after a required file.io part has been consumed.
 
-Do not upload confidential material unless file.io's privacy, retention, and
-security properties are appropriate for it.
+## Testing
+
+The test suite uses a local mock of all three HTTP APIs and does not create
+public uploads:
+
+```bash
+tests/run.sh
+```
 
 ## Uninstall
 
