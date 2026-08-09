@@ -12,10 +12,14 @@ cat >"$test_dir/bin/curl" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 
-form='' output='' headers='' write_out='' url=''
+form='' output='' headers='' write_out='' url='' upload_file=''
 while (( $# )); do
     case $1 in
-        --form) form=$2; shift 2 ;;
+        --form)
+            form=$2
+            [[ $form == *=@* ]] && upload_file=${form#*=@}
+            shift 2
+            ;;
         --output) output=$2; shift 2 ;;
         --dump-header) headers=$2; shift 2 ;;
         --write-out) write_out=$2; shift 2 ;;
@@ -30,13 +34,14 @@ if [[ -n $write_out ]]; then
     case $url in
         https://file.io/) printf '0.010' ;;
         https://temp.sh/) printf '0.050' ;;
-        *) printf '0.100' ;;
+        https://litterbox.catbox.moe/) printf '0.070' ;;
+        https://0x0.st/) printf '0.100' ;;
+        *) printf '0.120' ;;
     esac
     exit 0
 fi
 
 if [[ -n $form ]]; then
-    upload_file=${form#file=@}
     case $url in
         https://file.io)
             [[ ${MOCK_FAIL_FILEIO:-0} == 1 ]] && exit 22
@@ -51,10 +56,33 @@ if [[ -n $form ]]; then
             cp -- "$upload_file" "$MOCK_REMOTE/zero.1"
             printf 'https://0x0.st/z1\n'
             ;;
+        https://litterbox.catbox.moe/resources/internals/api.php)
+            cp -- "$upload_file" "$MOCK_REMOTE/litterbox.1"
+            printf 'https://files.catbox.moe/l1.bin\n'
+            ;;
+        'https://uguu.se/upload?output=text')
+            cp -- "$upload_file" "$MOCK_REMOTE/uguu.1"
+            printf 'https://n.uguu.se/u1.bin\n'
+            ;;
         *) exit 22 ;;
     esac
     exit 0
 fi
+
+case $url in
+    https://api.github.com/repos/BogdanStamenovic/fiotransfer/commits/main)
+        printf '{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}\n'
+        exit 0
+        ;;
+    https://api.github.com/repos/BogdanStamenovic/fiotransfer/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)
+        printf '{"status":"ahead"}\n'
+        exit 0
+        ;;
+    https://raw.githubusercontent.com/BogdanStamenovic/fiotransfer/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/fileio.sh)
+        cp -- "$MOCK_UPDATE_SOURCE" "$output"
+        exit 0
+        ;;
+esac
 
 [[ -n $output ]] || exit 2
 : >"$headers"
@@ -66,6 +94,8 @@ case $url in
     https://file.io/v1) cp -- "$MOCK_REMOTE/v1" "$output" ;;
     https://temp.sh/t1/part) cp -- "$MOCK_REMOTE/temp.1" "$output" ;;
     https://0x0.st/z1) cp -- "$MOCK_REMOTE/zero.1" "$output" ;;
+    https://files.catbox.moe/l1.bin) cp -- "$MOCK_REMOTE/litterbox.1" "$output" ;;
+    https://n.uguu.se/u1.bin) cp -- "$MOCK_REMOTE/uguu.1" "$output" ;;
     *) exit 22 ;;
 esac
 MOCK
@@ -74,6 +104,7 @@ chmod +x "$test_dir/bin/curl"
 export PATH="$test_dir/bin:$PATH"
 export MOCK_REMOTE="$test_dir/remote"
 export FIOTRANSFER_STATE_HOME="$test_dir/state"
+export XDG_STATE_HOME="$test_dir/xdg-state"
 # shellcheck source=../fileio.sh
 source "$repo_dir/fileio.sh"
 
@@ -117,9 +148,52 @@ cmp "$test_dir/source.bin" "$test_dir/fallback.bin"
 [[ $(_fiotransfer_locator_to_url f:new_key) == https://file.io/new_key ]]
 [[ $(_fiotransfer_locator_to_url t:a/file) == https://temp.sh/a/file ]]
 [[ $(_fiotransfer_locator_to_url z:abc.txt) == https://0x0.st/abc.txt ]]
+[[ $(_fiotransfer_locator_to_url l:abc.bin) == https://files.catbox.moe/abc.bin ]]
+[[ $(_fiotransfer_locator_to_url u:n.uguu.se/abc.bin) == https://n.uguu.se/abc.bin ]]
 if _fiotransfer_locator_to_url https://example.com/not-supported >/dev/null; then
     printf 'Unsupported URL was accepted.\n' >&2
     exit 1
 fi
+
+# Exercise both new upload adapters and their download locators.
+unset MOCK_FAIL_FILEIO
+[[ $(_fiotransfer_upload_provider litterbox "$test_dir/source.bin") == l:l1.bin ]]
+fioget l:l1.bin "$test_dir/litterbox.bin" >/dev/null
+cmp "$test_dir/source.bin" "$test_dir/litterbox.bin"
+[[ $(_fiotransfer_upload_provider uguu "$test_dir/source.bin") == u:n.uguu.se/u1.bin ]]
+fioget u:n.uguu.se/u1.bin "$test_dir/uguu.bin" >/dev/null
+cmp "$test_dir/source.bin" "$test_dir/uguu.bin"
+
+# The updater stages, validates, backs up, atomically replaces, and reloads an
+# installer-managed script.
+install_home="$test_dir/install-home"
+mkdir -p "$install_home"
+HOME="$install_home" XDG_DATA_HOME="$install_home/data" \
+    XDG_STATE_HOME="$install_home/state" "$repo_dir/install.sh" >/dev/null
+test -f "$install_home/data/fiotransfer/fileio.sh"
+if git -C "$repo_dir" diff --quiet HEAD -- fileio.sh install.sh; then
+    [[ $(<"$install_home/state/fiotransfer/installed-revision") == \
+        "$(git -C "$repo_dir" rev-parse HEAD)" ]]
+else
+    test ! -e "$install_home/state/fiotransfer/installed-revision"
+fi
+
+export XDG_DATA_HOME="$test_dir/data"
+mkdir -p "$XDG_DATA_HOME/fiotransfer"
+cp -- "$repo_dir/fileio.sh" "$XDG_DATA_HOME/fiotransfer/fileio.sh"
+mkdir -p "$XDG_STATE_HOME/fiotransfer"
+printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    >"$XDG_STATE_HOME/fiotransfer/installed-revision"
+sed '1s/$/ (updated)/' "$repo_dir/fileio.sh" >"$test_dir/update-source.sh"
+export MOCK_UPDATE_SOURCE="$test_dir/update-source.sh"
+source "$XDG_DATA_HOME/fiotransfer/fileio.sh"
+fiotransfer update >"$test_dir/update.log"
+cmp "$test_dir/update-source.sh" "$XDG_DATA_HOME/fiotransfer/fileio.sh"
+grep -q 'fiotransfer updated successfully' "$test_dir/update.log"
+test "$(find "$XDG_STATE_HOME/fiotransfer/backups" -type f | wc -l)" -eq 1
+[[ $(<"$XDG_STATE_HOME/fiotransfer/installed-revision") == \
+    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ]]
+fiotransfer update >"$test_dir/update-current.log"
+grep -q 'already up to date' "$test_dir/update-current.log"
 
 printf 'All tests passed.\n'

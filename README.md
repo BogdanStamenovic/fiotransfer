@@ -4,12 +4,14 @@ Two small Bash commands for transferring files through anonymous temporary
 file hosts:
 
 - `fiotransfer FILE` uploads a file and prints a compact share code.
+- `fiotransfer update` safely updates an installer-managed copy from GitHub.
 - `fiotransfer uninstall` removes an installer-managed installation.
 - `fioget CODE_OR_URL [OUTPUT_FILE]` downloads it, assembling large and
   multi-provider uploads automatically.
 
 The uploader currently supports [file.io](https://www.file.io/developers),
-[temp.sh](https://temp.sh/), and [0x0.st](https://0x0.st/). It measures their
+[temp.sh](https://temp.sh/), [Litterbox](https://litterbox.catbox.moe/),
+[0x0.st](https://0x0.st/), and [Uguu](https://uguu.se/). It measures their
 endpoint latency at the start of an upload, balances that latency against how
 many parts each service would need, respects known object and hourly limits,
 and automatically retries a part through another provider if an upload fails.
@@ -84,10 +86,10 @@ Run either command without arguments to see its usage summary.
 ## How it works
 
 `fiotransfer` sends multipart-form uploads to the providers' public anonymous
-APIs. A short prefix identifies non-file.io codes (`t:` for temp.sh and `z:`
-for 0x0.st). Existing bare file.io keys remain valid. `fioget` resolves the
-code, follows redirects, and uses the service's suggested filename unless an
-output filename is supplied.
+APIs. A short prefix identifies non-file.io codes: `t:` for temp.sh, `l:` for
+Litterbox, `z:` for 0x0.st, and `u:` for Uguu. Existing bare file.io keys
+remain valid. `fioget` resolves the code, follows redirects, and uses the
+service's suggested filename unless an output filename is supplied.
 
 The code is not encryption and should be treated like the full link: anyone
 who has it can download the file.
@@ -107,7 +109,9 @@ The defaults reflect the providers' published limits as of August 2026:
 | --- | ---: | ---: | --- |
 | file.io | 2 GB | 4 GB | Deleted after first download on the free plan |
 | temp.sh | 4 GB | Not published | Three days |
+| Litterbox | 1 GB | Not published | 72 hours |
 | 0x0.st | 512 MiB | Not published | Size-dependent, at least 30 days |
+| Uguu | 128 MiB | Not published | Three hours |
 
 These are independent services with different privacy and acceptable-use
 policies. Codes are access credentials, not encryption. Do not upload content
@@ -135,7 +139,7 @@ ties; measured latency and required part count otherwise decide which eligible
 provider is tried first:
 
 ```bash
-FIOTRANSFER_PROVIDERS=temp,fileio fiotransfer large.iso
+FIOTRANSFER_PROVIDERS=temp,fileio,litterbox fiotransfer large.iso
 ```
 
 The maximum part size can be lowered for testing or constrained temporary
@@ -152,13 +156,42 @@ For an isolated test that must not affect normal quota history, set
 
 Every file.io part is a one-time link. A multipart download consumes those
 links as it walks the chain. Consequently, a failed or interrupted download
-may make the final code unusable and require a fresh upload. temp.sh and 0x0.st
-have different retention rules, but they do not make a mixed chain recoverable
-after a required file.io part has been consumed.
+may make the final code unusable and require a fresh upload. The other
+providers have different retention rules, but they do not make a mixed chain
+recoverable after a required file.io part has been consumed.
+
+## Updating
+
+An installation made by `install.sh` can update itself from this repository's
+`main` branch:
+
+```bash
+fiotransfer update
+```
+
+The updater adapts the staged-validation model from
+[auto-update-changer](https://github.com/BogdanStamenovic/auto-update-changer)
+to this user-scoped Bash installation. It downloads the replacement beside the
+installed file at a commit-pinned URL, verifies that GitHub's current revision
+is a fast-forward from the installed revision, checks Bash syntax and required
+entry points, detects an already-current copy, creates a timestamped backup,
+atomically replaces the installed script, and reloads it into the current
+shell. It refuses rewritten/divergent update history and refuses to modify a
+copy sourced directly from a clone or any location not managed by the
+installer.
+
+Backups are stored in:
+
+```text
+${XDG_STATE_HOME:-$HOME/.local/state}/fiotransfer/backups/
+```
+
+Updates trust the code published to the repository's `main` branch. Review the
+repository history before updating if that trust model is not suitable.
 
 ## Testing
 
-The test suite uses a local mock of all three HTTP APIs and does not create
+The test suite uses a local mock of all five HTTP APIs and does not create
 public uploads:
 
 ```bash

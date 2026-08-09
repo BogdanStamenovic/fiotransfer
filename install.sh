@@ -17,6 +17,9 @@ source_file=${script_dir}/fileio.sh
 data_home=${XDG_DATA_HOME:-"${HOME}/.local/share"}
 install_dir=${data_home}/fiotransfer
 install_file=${install_dir}/fileio.sh
+state_home=${XDG_STATE_HOME:-"${HOME}/.local/state"}
+state_dir=${state_home}/fiotransfer
+revision_file=${state_dir}/installed-revision
 bashrc=${HOME}/.bashrc
 start_marker='# >>> fiotransfer >>>'
 end_marker='# <<< fiotransfer <<<'
@@ -35,6 +38,17 @@ cp -- "$source_file" "$temporary_script"
 chmod 0644 "$temporary_script"
 mv -- "$temporary_script" "$install_file"
 temporary_script=''
+
+# Record the trusted source revision for forward-only self-updates. Installs
+# from an exported archive still work; the updater will establish metadata on
+# its first successful check.
+if command -v git >/dev/null 2>&1 && \
+    git -C "$script_dir" diff --quiet HEAD -- fileio.sh install.sh && \
+    revision=$(git -C "$script_dir" rev-parse HEAD 2>/dev/null) && \
+    [[ $revision =~ ^[0-9a-f]{40}$ ]]; then
+    mkdir -p -- "$state_dir"
+    printf '%s\n' "$revision" >"$revision_file"
+fi
 
 touch -- "$bashrc"
 if grep -Fqx "$start_marker" "$bashrc" || grep -Fqx "$end_marker" "$bashrc"; then

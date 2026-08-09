@@ -3,7 +3,7 @@
 
 fiotransfer() {
     if (( $# != 1 )); then
-        printf 'Usage: fiotransfer FILE\n       fiotransfer uninstall\n' >&2
+        printf 'Usage: fiotransfer FILE\n       fiotransfer update\n       fiotransfer uninstall\n' >&2
         return 2
     fi
 
@@ -11,6 +11,10 @@ fiotransfer() {
 
     if [[ $file == uninstall ]]; then
         _fiotransfer_uninstall
+        return
+    fi
+    if [[ $file == update ]]; then
+        _fiotransfer_update
         return
     fi
     if [[ ! -f $file ]]; then
@@ -187,11 +191,134 @@ _fiotransfer_uninstall() {
     unset -f fioget fiotransfer
 }
 
+# User-scoped adaptation of auto-update-changer's staged update model. The
+# downloaded replacement is syntax-checked and identity-checked before the
+# current installation is backed up and atomically replaced.
+_fiotransfer_update() {
+    local data_home install_dir install_file source_file temporary_file
+    local state_home backup_dir backup_file timestamp command revision_file
+    local api_root=https://api.github.com/repos/BogdanStamenovic/fiotransfer
+    local remote_response remote_revision installed_revision='' compare_response update_url
+    local sha_pattern='"sha"[[:space:]]*:[[:space:]]*"([0-9a-f]{40})"'
+    local ahead_pattern='"status"[[:space:]]*:[[:space:]]*"ahead"'
+
+    for command in curl bash cmp readlink; do
+        if ! command -v "$command" >/dev/null 2>&1; then
+            printf 'fiotransfer update: %s is required\n' "$command" >&2
+            return 127
+        fi
+    done
+
+    data_home=${XDG_DATA_HOME:-"${HOME}/.local/share"}
+    install_dir=${data_home}/fiotransfer
+    install_file=${install_dir}/fileio.sh
+    source_file=$(readlink -f -- "${BASH_SOURCE[0]}")
+    if [[ $source_file != "$(readlink -m -- "$install_file")" || ! -f $install_file ]]; then
+        printf 'fiotransfer update: this copy is not installer-managed; run ./install.sh first\n' >&2
+        return 1
+    fi
+    if [[ ! -w $install_dir ]]; then
+        printf 'fiotransfer update: installation directory is not writable: %s\n' \
+            "$install_dir" >&2
+        return 1
+    fi
+
+    if [[ -n ${XDG_STATE_HOME:-} ]]; then
+        state_home=${XDG_STATE_HOME}/fiotransfer
+    else
+        state_home=${HOME}/.local/state/fiotransfer
+    fi
+    revision_file=${state_home}/installed-revision
+    if [[ -r $revision_file ]]; then
+        installed_revision=$(<"$revision_file")
+        if [[ ! $installed_revision =~ ^[0-9a-f]{40}$ ]]; then
+            printf 'fiotransfer update: invalid installed revision metadata\n' >&2
+            return 1
+        fi
+    fi
+
+    if ! remote_response=$(curl --fail --location --show-error --silent \
+        "${api_root}/commits/main"); then
+        printf 'fiotransfer update: could not resolve the current main revision\n' >&2
+        return 1
+    fi
+    if [[ $remote_response =~ $sha_pattern ]]; then
+        remote_revision=${BASH_REMATCH[1]}
+    else
+        printf 'fiotransfer update: GitHub returned an unexpected revision response\n' >&2
+        return 1
+    fi
+
+    # Match auto-update-changer's forward-only rule when installation metadata
+    # is available. This refuses rewritten or divergent main-branch history.
+    if [[ -n $installed_revision && $installed_revision != "$remote_revision" ]]; then
+        if ! compare_response=$(curl --fail --location --show-error --silent \
+            "${api_root}/compare/${installed_revision}...${remote_revision}"); then
+            printf 'fiotransfer update: could not verify forward update history\n' >&2
+            return 1
+        fi
+        if [[ ! $compare_response =~ $ahead_pattern ]]; then
+            printf 'fiotransfer update: remote history is not a fast-forward; refusing update\n' >&2
+            return 1
+        fi
+    fi
+    update_url="https://raw.githubusercontent.com/BogdanStamenovic/fiotransfer/${remote_revision}/fileio.sh"
+
+    if ! temporary_file=$(mktemp "${install_dir}/.fileio.sh.update.XXXXXX"); then
+        printf 'fiotransfer update: could not stage the update\n' >&2
+        return 1
+    fi
+    if ! curl --fail --location --show-error --silent \
+        --output "$temporary_file" "$update_url"; then
+        rm -f -- "$temporary_file"
+        printf 'fiotransfer update: could not download the current main-branch version\n' >&2
+        return 1
+    fi
+    if ! bash -n "$temporary_file" || \
+        ! grep -Fq 'fiotransfer() {' "$temporary_file" || \
+        ! grep -Fq 'fioget() {' "$temporary_file" || \
+        ! grep -Fq '_fiotransfer_update() {' "$temporary_file"; then
+        rm -f -- "$temporary_file"
+        printf 'fiotransfer update: downloaded file failed validation\n' >&2
+        return 1
+    fi
+    if cmp -s -- "$temporary_file" "$install_file"; then
+        rm -f -- "$temporary_file"
+        if mkdir -p -- "$state_home"; then
+            printf '%s\n' "$remote_revision" >"$revision_file"
+        fi
+        printf 'fiotransfer is already up to date.\n'
+        return 0
+    fi
+
+    backup_dir=${state_home}/backups
+    timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+    backup_file=${backup_dir}/fileio.sh.${timestamp}
+    if ! mkdir -p -- "$backup_dir" || ! cp -p -- "$install_file" "$backup_file"; then
+        rm -f -- "$temporary_file"
+        printf 'fiotransfer update: could not create backup\n' >&2
+        return 1
+    fi
+    chmod --reference="$install_file" "$temporary_file" 2>/dev/null || chmod 0644 "$temporary_file"
+    if ! mv -- "$temporary_file" "$install_file"; then
+        rm -f -- "$temporary_file"
+        printf 'fiotransfer update: could not replace installed script\n' >&2
+        return 1
+    fi
+    printf '%s\n' "$remote_revision" >"$revision_file"
+
+    # Load the validated replacement now so a new terminal is not required.
+    # shellcheck source=/dev/null
+    source "$install_file"
+    printf 'fiotransfer updated successfully.\nBackup: %s\n' "$backup_file"
+}
+
 # Build the enabled provider table. Limits are bytes per uploaded object and
 # bytes per rolling hour. A zero hourly limit means the service publishes no
 # hourly quota; upload failures remain the authoritative fallback signal.
 _fiotransfer_init_providers() {
-    local temp_dir=$1 provider provider_list=${FIOTRANSFER_PROVIDERS:-fileio,temp,0x0}
+    local temp_dir=$1 provider
+    local provider_list=${FIOTRANSFER_PROVIDERS:-fileio,temp,litterbox,0x0,uguu}
     local chunk_cap=${FIOTRANSFER_CHUNK_SIZE_BYTES:-0}
 
     if [[ ! $chunk_cap =~ ^[0-9]+$ ]]; then
@@ -215,6 +342,12 @@ _fiotransfer_init_providers() {
     _FIOTRANSFER_MAX_OBJECT[0x0]=536870912
     _FIOTRANSFER_HOURLY_LIMIT[0x0]=0
     _FIOTRANSFER_ENDPOINT[0x0]=https://0x0.st/
+    _FIOTRANSFER_MAX_OBJECT[litterbox]=1000000000
+    _FIOTRANSFER_HOURLY_LIMIT[litterbox]=0
+    _FIOTRANSFER_ENDPOINT[litterbox]=https://litterbox.catbox.moe/
+    _FIOTRANSFER_MAX_OBJECT[uguu]=134217728
+    _FIOTRANSFER_HOURLY_LIMIT[uguu]=0
+    _FIOTRANSFER_ENDPOINT[uguu]=https://uguu.se/
 
     provider_list=${provider_list//,/ }
     for provider in $provider_list; do
@@ -379,6 +512,39 @@ _fiotransfer_upload_provider() {
             printf 'fiotransfer: 0x0.st returned an unexpected response\n' >&2
             return 1
             ;;
+        litterbox)
+            if ! response=$(curl --progress-bar --show-error --fail-with-body \
+                --form 'reqtype=fileupload' --form 'time=72h' \
+                --form "fileToUpload=@${upload_file}" \
+                https://litterbox.catbox.moe/resources/internals/api.php); then
+                printf 'fiotransfer: Litterbox upload failed\n' >&2
+                return 1
+            fi
+            url=${response//$'\r'/}
+            url=${url//$'\n'/}
+            if [[ $url == https://files.catbox.moe/* && $url != *[[:space:]]* ]]; then
+                printf 'l:%s\n' "${url#https://files.catbox.moe/}"
+                return 0
+            fi
+            printf 'fiotransfer: Litterbox returned an unexpected response\n' >&2
+            return 1
+            ;;
+        uguu)
+            if ! response=$(curl --progress-bar --show-error --fail-with-body \
+                --form "files[]=@${upload_file}" \
+                'https://uguu.se/upload?output=text'); then
+                printf 'fiotransfer: Uguu upload failed\n' >&2
+                return 1
+            fi
+            url=${response//$'\r'/}
+            url=${url//$'\n'/}
+            if [[ $url =~ ^https://([A-Za-z0-9-]+\.)?uguu\.se/[^[:space:]]+$ ]]; then
+                printf 'u:%s\n' "${url#https://}"
+                return 0
+            fi
+            printf 'fiotransfer: Uguu returned an unexpected response\n' >&2
+            return 1
+            ;;
     esac
     return 1
 }
@@ -459,7 +625,12 @@ _fiotransfer_locator_to_url() {
         f:*) [[ ${locator#f:} =~ ^[A-Za-z0-9_-]+$ ]] && printf 'https://file.io/%s\n' "${locator#f:}" ;;
         t:?*) [[ ${locator#t:} != *[[:space:]]* ]] && printf 'https://temp.sh/%s\n' "${locator#t:}" ;;
         z:?*) [[ ${locator#z:} != *[[:space:]]* ]] && printf 'https://0x0.st/%s\n' "${locator#z:}" ;;
-        https://file.io/*|https://www.file.io/*|https://temp.sh/*|https://www.temp.sh/*|https://0x0.st/*)
+        l:?*) [[ ${locator#l:} != *[[:space:]]* ]] && printf 'https://files.catbox.moe/%s\n' "${locator#l:}" ;;
+        u:?*)
+            [[ ${locator#u:} =~ ^([A-Za-z0-9-]+\.)?uguu\.se/[^[:space:]]+$ ]] && \
+                printf 'https://%s\n' "${locator#u:}"
+            ;;
+        https://file.io/*|https://www.file.io/*|https://temp.sh/*|https://www.temp.sh/*|https://0x0.st/*|https://files.catbox.moe/*|https://uguu.se/*|https://*.uguu.se/*)
             [[ $locator != *[[:space:]]* ]] && printf '%s\n' "$locator"
             ;;
         *)
