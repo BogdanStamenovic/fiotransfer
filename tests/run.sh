@@ -12,7 +12,7 @@ cat >"$test_dir/bin/curl" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 
-form='' output='' headers='' write_out='' url='' upload_file=''
+form='' output='' headers='' write_out='' url='' upload_file='' request=GET
 while (( $# )); do
     case $1 in
         --form)
@@ -23,7 +23,8 @@ while (( $# )); do
         --output) output=$2; shift 2 ;;
         --dump-header) headers=$2; shift 2 ;;
         --write-out) write_out=$2; shift 2 ;;
-        --connect-timeout|--max-time) shift 2 ;;
+        --request) request=$2; shift 2 ;;
+        --connect-timeout|--max-time|--speed-limit|--speed-time) shift 2 ;;
         --silent|--show-error|--progress-bar|--fail|--fail-with-body|--location) shift ;;
         --*) shift ;;
         *) url=$1; shift ;;
@@ -93,7 +94,10 @@ case $url in
         cp -- "$MOCK_REMOTE/fileio.1" "$output"
         ;;
     https://file.io/v1) cp -- "$MOCK_REMOTE/v1" "$output" ;;
-    https://temp.sh/t1/part) cp -- "$MOCK_REMOTE/temp.1" "$output" ;;
+    https://temp.sh/t1/part)
+        [[ $request == POST ]] || exit 22
+        cp -- "$MOCK_REMOTE/temp.1" "$output"
+        ;;
     https://0x0.st/z1) cp -- "$MOCK_REMOTE/zero.1" "$output" ;;
     https://files.catbox.moe/l1.bin) cp -- "$MOCK_REMOTE/litterbox.1" "$output" ;;
     https://n.uguu.se/u1.bin) cp -- "$MOCK_REMOTE/uguu.1" "$output" ;;
@@ -119,30 +123,47 @@ grep -q '^  temp$' <<<"$providers_output"
 grep -q '^  fileio$' <<<"$providers_output"
 [[ $(FIOTRANSFER_PROVIDERS=temp,fileio fiotransfer loaded-providers) == "$providers_output" ]]
 
-limits_output=$(fiotransfer usage-limits)
+limits_output=$(FIOTRANSFER_PROVIDERS=fileio,temp,litterbox,0x0,uguu \
+    fiotransfer usage-limits)
 grep -Eq '^fileio +2 GB +4 GB$' <<<"$limits_output"
 grep -Eq '^uguu +128 MiB +not published$' <<<"$limits_output"
 
 printf '%s fileio 1000000000\n' "$(date +%s)" >"$test_dir/state/usage"
-usage_output=$(fiotransfer usage)
+usage_output=$(FIOTRANSFER_PROVIDERS=fileio,temp,litterbox,0x0,uguu \
+    fiotransfer usage)
 grep -Eq '^fileio +1 GB +3 GB$' <<<"$usage_output"
 grep -Eq '^temp +not tracked +unknown$' <<<"$usage_output"
 
 export MOCK_UNRESPONSIVE_URL=https://0x0.st/
 unresponsive_output=$(fiotransfer unresponsive-providers)
 [[ $unresponsive_output == 0x0 ]]
-status_output=$(fiotransfer status)
+status_output=$(FIOTRANSFER_PROVIDERS=fileio,temp,litterbox,0x0,uguu \
+    fiotransfer status)
 grep -Eq '^fileio +responsive +10 ms +2 GB +1 GB / 4 GB$' <<<"$status_output"
 grep -Eq '^0x0 +unresponsive +- +512 MiB +not tracked$' <<<"$status_output"
 unset MOCK_UNRESPONSIVE_URL
 grep -q 'All loaded providers are responsive' <<<"$(fiotransfer unresponsive)"
 
 grep -q 'fiotransfer status' <<<"$(fiotransfer --help)"
+default_providers=$(fiotransfer providers)
+grep -q '^  temp$' <<<"$default_providers"
+if grep -q '^  fileio$' <<<"$default_providers"; then
+    printf 'file.io was unexpectedly enabled by default.\n' >&2
+    exit 1
+fi
+if FIOTRANSFER_STALL_TIMEOUT_SECONDS=0 fiotransfer providers \
+    >"$test_dir/invalid-stall.out" 2>"$test_dir/invalid-stall.err"; then
+    printf 'Invalid stall timeout was accepted.\n' >&2
+    exit 1
+fi
+grep -q 'FIOTRANSFER_STALL_TIMEOUT_SECONDS must be a positive integer' \
+    "$test_dir/invalid-stall.err"
 
 # Leave file.io only twelve bytes of its rolling-hour allowance. Its lower
 # measured latency wins the first part; temp.sh must carry the remainder.
 printf '%s fileio 3999999988\n' "$(date +%s)" >"$test_dir/state/usage"
-upload_output=$(FIOTRANSFER_CHUNK_SIZE_BYTES=128 \
+upload_output=$(FIOTRANSFER_PROVIDERS=fileio,temp,litterbox,0x0,uguu \
+    FIOTRANSFER_CHUNK_SIZE_BYTES=128 \
     fiotransfer "$test_dir/source.bin" 2>"$test_dir/upload.log")
 code=$(printf '%s\n' "$upload_output" | awk '/^Code: / { print $2 }')
 [[ $code == t:t1/part ]]
@@ -165,7 +186,8 @@ fioget v1 "$test_dir/legacy.bin" >/dev/null
 rm -f "$test_dir/remote/"*
 : >"$test_dir/state/usage"
 export MOCK_FAIL_FILEIO=1
-fallback_output=$(fiotransfer "$test_dir/source.bin" 2>"$test_dir/fallback.log")
+fallback_output=$(FIOTRANSFER_PROVIDERS=fileio,temp,litterbox,0x0,uguu \
+    fiotransfer "$test_dir/source.bin" 2>"$test_dir/fallback.log")
 fallback_code=$(printf '%s\n' "$fallback_output" | awk '/^Code: / { print $2 }')
 [[ $fallback_code == t:t1/part ]]
 grep -q 'fileio failed; trying another provider' "$test_dir/fallback.log"

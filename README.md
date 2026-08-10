@@ -20,6 +20,15 @@ and automatically retries a part through another provider if an upload fails.
 The result is still one compact code, regardless of how many providers or
 parts were used.
 
+Normal uploads currently load temp.sh, Litterbox, 0x0.st, and Uguu. file.io
+remains supported for existing download codes and explicit opt-in uploads, but
+is excluded from the default upload pool because its API can stall after
+accepting most of a request:
+
+```bash
+FIOTRANSFER_PROVIDERS=fileio,temp,litterbox,0x0,uguu fiotransfer archive.zip
+```
+
 ## Requirements
 
 - Bash 4 or newer
@@ -106,6 +115,8 @@ APIs. A short prefix identifies non-file.io codes: `t:` for temp.sh, `l:` for
 Litterbox, `z:` for 0x0.st, and `u:` for Uguu. Existing bare file.io keys
 remain valid. `fioget` resolves the code, follows redirects, and uses the
 service's suggested filename unless an output filename is supplied.
+For temp.sh links it uses the service's POST-based raw-download endpoint
+instead of saving the HTML preview returned by a normal GET request.
 
 The code is not encryption and should be treated like the full link: anyone
 who has it can download the file.
@@ -167,6 +178,14 @@ FIOTRANSFER_CHUNK_SIZE_BYTES=$((500 * 1024 * 1024)) fiotransfer large.iso
 
 For an isolated test that must not affect normal quota history, set
 `FIOTRANSFER_STATE_HOME` to another directory.
+
+Uploads that stop transferring data for 15 seconds are aborted so routing can
+fall back instead of waiting indefinitely on a stalled provider. Override the
+interval with a positive number of seconds when needed:
+
+```bash
+FIOTRANSFER_STALL_TIMEOUT_SECONDS=30 fiotransfer large.iso
+```
 
 ## One-time-link warning
 

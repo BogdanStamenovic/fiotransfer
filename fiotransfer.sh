@@ -375,13 +375,22 @@ _fiotransfer_update() {
 # hourly quota; upload failures remain the authoritative fallback signal.
 _fiotransfer_init_providers() {
     local temp_dir=$1 provider
-    local provider_list=${FIOTRANSFER_PROVIDERS:-fileio,temp,litterbox,0x0,uguu}
+    # file.io remains available as an explicit opt-in, but its upload API has
+    # recently stalled after accepting most of a request. Keep normal uploads
+    # on providers that currently complete reliably.
+    local provider_list=${FIOTRANSFER_PROVIDERS:-temp,litterbox,0x0,uguu}
     local chunk_cap=${FIOTRANSFER_CHUNK_SIZE_BYTES:-0}
+    local stall_timeout=${FIOTRANSFER_STALL_TIMEOUT_SECONDS:-15}
 
     if [[ ! $chunk_cap =~ ^[0-9]+$ ]]; then
         printf 'fiotransfer: FIOTRANSFER_CHUNK_SIZE_BYTES must be a non-negative integer\n' >&2
         return 1
     fi
+    if [[ ! $stall_timeout =~ ^[1-9][0-9]*$ ]]; then
+        printf 'fiotransfer: FIOTRANSFER_STALL_TIMEOUT_SECONDS must be a positive integer\n' >&2
+        return 1
+    fi
+    _FIOTRANSFER_STALL_TIMEOUT_SECONDS=$stall_timeout
 
     declare -ga _FIOTRANSFER_PROVIDERS=()
     declare -gA _FIOTRANSFER_MAX_OBJECT=()
@@ -650,12 +659,14 @@ _fiotransfer_select_provider() {
 
 _fiotransfer_upload_provider() {
     local provider=$1 upload_file=$2 response key error url
+    local stall_timeout=${_FIOTRANSFER_STALL_TIMEOUT_SECONDS:-15}
     local key_pattern='"key"[[:space:]]*:[[:space:]]*"([^\"]+)"'
     local error_pattern='"message"[[:space:]]*:[[:space:]]*"([^\"]+)"'
 
     case $provider in
         fileio)
             if ! response=$(curl --progress-bar --show-error --fail-with-body \
+                --speed-limit 1 --speed-time "$stall_timeout" \
                 --form "file=@${upload_file}" https://file.io); then
                 if [[ $response =~ $error_pattern ]]; then error=${BASH_REMATCH[1]}; fi
                 printf 'fiotransfer: file.io: %s\n' "${error:-upload failed}" >&2
@@ -673,6 +684,7 @@ _fiotransfer_upload_provider() {
             ;;
         temp)
             if ! response=$(curl --progress-bar --show-error --fail-with-body \
+                --speed-limit 1 --speed-time "$stall_timeout" \
                 --form "file=@${upload_file}" https://temp.sh/upload); then
                 printf 'fiotransfer: temp.sh upload failed\n' >&2
                 return 1
@@ -688,6 +700,7 @@ _fiotransfer_upload_provider() {
             ;;
         0x0)
             if ! response=$(curl --progress-bar --show-error --fail-with-body \
+                --speed-limit 1 --speed-time "$stall_timeout" \
                 --form "file=@${upload_file}" https://0x0.st); then
                 printf 'fiotransfer: 0x0.st upload failed\n' >&2
                 return 1
@@ -703,6 +716,7 @@ _fiotransfer_upload_provider() {
             ;;
         litterbox)
             if ! response=$(curl --progress-bar --show-error --fail-with-body \
+                --speed-limit 1 --speed-time "$stall_timeout" \
                 --form 'reqtype=fileupload' --form 'time=72h' \
                 --form "fileToUpload=@${upload_file}" \
                 https://litterbox.catbox.moe/resources/internals/api.php); then
@@ -720,6 +734,7 @@ _fiotransfer_upload_provider() {
             ;;
         uguu)
             if ! response=$(curl --progress-bar --show-error --fail-with-body \
+                --speed-limit 1 --speed-time "$stall_timeout" \
                 --form "files[]=@${upload_file}" \
                 'https://uguu.se/upload?output=text'); then
                 printf 'fiotransfer: Uguu upload failed\n' >&2
@@ -856,7 +871,12 @@ _fiotransfer_download_chain() {
         fi
         node=${temp_dir}/node
         headers=${temp_dir}/headers
-        if ! curl --fail --location --show-error --dump-header "$headers" \
+        if [[ $url == https://temp.sh/* || $url == https://www.temp.sh/* ]]; then
+            if ! curl --fail --location --show-error --request POST \
+                --dump-header "$headers" --output "$node" "$url"; then
+                return 1
+            fi
+        elif ! curl --fail --location --show-error --dump-header "$headers" \
             --output "$node" "$url"; then
             return 1
         fi
