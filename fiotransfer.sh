@@ -206,7 +206,7 @@ _fiotransfer_uninstall() {
 
     data_home=${XDG_DATA_HOME:-"${HOME}/.local/share"}
     install_dir=${data_home}/fiotransfer
-    install_file=${install_dir}/fiotransfer
+    install_file=${install_dir}/fiotransfer.sh
 
     printf 'This will remove fiotransfer from %s and %s.\n' "$install_dir" "$bashrc"
     printf 'Are you sure? [y/N] '
@@ -268,7 +268,7 @@ _fiotransfer_update() {
 
     data_home=${XDG_DATA_HOME:-"${HOME}/.local/share"}
     install_dir=${data_home}/fiotransfer
-    install_file=${install_dir}/fiotransfer
+    install_file=${install_dir}/fiotransfer.sh
     source_file=$(readlink -f -- "${BASH_SOURCE[0]}")
     if [[ $source_file != "$(readlink -m -- "$install_file")" || ! -f $install_file ]]; then
         printf 'fiotransfer update: this copy is not installer-managed; run ./install.sh first\n' >&2
@@ -319,9 +319,9 @@ _fiotransfer_update() {
             return 1
         fi
     fi
-    update_url="https://raw.githubusercontent.com/BogdanStamenovic/fiotransfer/${remote_revision}/fiotransfer"
+    update_url="https://raw.githubusercontent.com/BogdanStamenovic/fiotransfer/${remote_revision}/fiotransfer.sh"
 
-    if ! temporary_file=$(mktemp "${install_dir}/.fiotransfer.update.XXXXXX"); then
+    if ! temporary_file=$(mktemp "${install_dir}/.fiotransfer.sh.update.XXXXXX"); then
         printf 'fiotransfer update: could not stage the update\n' >&2
         return 1
     fi
@@ -350,7 +350,7 @@ _fiotransfer_update() {
 
     backup_dir=${state_home}/backups
     timestamp=$(date -u +%Y%m%dT%H%M%SZ)
-    backup_file=${backup_dir}/fiotransfer.${timestamp}
+    backup_file=${backup_dir}/fiotransfer.sh.${timestamp}
     if ! mkdir -p -- "$backup_dir" || ! cp -p -- "$install_file" "$backup_file"; then
         rm -f -- "$temporary_file"
         printf 'fiotransfer update: could not create backup\n' >&2

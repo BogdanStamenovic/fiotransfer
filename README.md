@@ -36,7 +36,7 @@ cd fiotransfer
 ./install.sh
 ```
 
-The installer copies `fiotransfer` to
+The installer copies `fiotransfer.sh` to
 `${XDG_DATA_HOME:-$HOME/.local/share}/fiotransfer/`, adds a marked source block
 to `~/.bashrc`, and can safely be run again to update an existing installation.
 Open a new terminal or reload the current shell:

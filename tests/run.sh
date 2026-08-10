@@ -79,7 +79,7 @@ case $url in
         printf '{"status":"ahead"}\n'
         exit 0
         ;;
-    https://raw.githubusercontent.com/BogdanStamenovic/fiotransfer/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/fiotransfer)
+    https://raw.githubusercontent.com/BogdanStamenovic/fiotransfer/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/fiotransfer.sh)
         cp -- "$MOCK_UPDATE_SOURCE" "$output"
         exit 0
         ;;
@@ -106,8 +106,8 @@ export PATH="$test_dir/bin:$PATH"
 export MOCK_REMOTE="$test_dir/remote"
 export FIOTRANSFER_STATE_HOME="$test_dir/state"
 export XDG_STATE_HOME="$test_dir/xdg-state"
-# shellcheck source=../fiotransfer
-source "$repo_dir/fiotransfer"
+# shellcheck source=../fiotransfer.sh
+source "$repo_dir/fiotransfer.sh"
 
 printf 'abcdefghijklmnopqrstuvwxyz0123456789' >"$test_dir/source.bin"
 
@@ -199,8 +199,8 @@ install_home="$test_dir/install-home"
 mkdir -p "$install_home"
 HOME="$install_home" XDG_DATA_HOME="$install_home/data" \
     XDG_STATE_HOME="$install_home/state" "$repo_dir/install.sh" >/dev/null
-test -f "$install_home/data/fiotransfer/fiotransfer"
-if git -C "$repo_dir" diff --quiet HEAD -- fiotransfer install.sh; then
+test -f "$install_home/data/fiotransfer/fiotransfer.sh"
+if git -C "$repo_dir" diff --quiet HEAD -- fiotransfer.sh install.sh; then
     [[ $(<"$install_home/state/fiotransfer/installed-revision") == \
         "$(git -C "$repo_dir" rev-parse HEAD)" ]]
 else
@@ -209,15 +209,15 @@ fi
 
 export XDG_DATA_HOME="$test_dir/data"
 mkdir -p "$XDG_DATA_HOME/fiotransfer"
-cp -- "$repo_dir/fiotransfer" "$XDG_DATA_HOME/fiotransfer/fiotransfer"
+cp -- "$repo_dir/fiotransfer.sh" "$XDG_DATA_HOME/fiotransfer/fiotransfer.sh"
 mkdir -p "$XDG_STATE_HOME/fiotransfer"
 printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     >"$XDG_STATE_HOME/fiotransfer/installed-revision"
-sed '1s/$/ (updated)/' "$repo_dir/fiotransfer" >"$test_dir/update-source.sh"
+sed '1s/$/ (updated)/' "$repo_dir/fiotransfer.sh" >"$test_dir/update-source.sh"
 export MOCK_UPDATE_SOURCE="$test_dir/update-source.sh"
-source "$XDG_DATA_HOME/fiotransfer/fiotransfer"
+source "$XDG_DATA_HOME/fiotransfer/fiotransfer.sh"
 fiotransfer update >"$test_dir/update.log"
-cmp "$test_dir/update-source.sh" "$XDG_DATA_HOME/fiotransfer/fiotransfer"
+cmp "$test_dir/update-source.sh" "$XDG_DATA_HOME/fiotransfer/fiotransfer.sh"
 grep -q 'fiotransfer updated successfully' "$test_dir/update.log"
 test "$(find "$XDG_STATE_HOME/fiotransfer/backups" -type f | wc -l)" -eq 1
 [[ $(<"$XDG_STATE_HOME/fiotransfer/installed-revision") == \
