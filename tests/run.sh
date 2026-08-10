@@ -31,6 +31,7 @@ while (( $# )); do
 done
 
 if [[ -n $write_out ]]; then
+    [[ ${MOCK_UNRESPONSIVE_URL:-} == "$url" ]] && exit 22
     case $url in
         https://file.io/) printf '0.010' ;;
         https://temp.sh/) printf '0.050' ;;
@@ -78,7 +79,7 @@ case $url in
         printf '{"status":"ahead"}\n'
         exit 0
         ;;
-    https://raw.githubusercontent.com/BogdanStamenovic/fiotransfer/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/fileio.sh)
+    https://raw.githubusercontent.com/BogdanStamenovic/fiotransfer/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/fiotransfer)
         cp -- "$MOCK_UPDATE_SOURCE" "$output"
         exit 0
         ;;
@@ -105,10 +106,38 @@ export PATH="$test_dir/bin:$PATH"
 export MOCK_REMOTE="$test_dir/remote"
 export FIOTRANSFER_STATE_HOME="$test_dir/state"
 export XDG_STATE_HOME="$test_dir/xdg-state"
-# shellcheck source=../fileio.sh
-source "$repo_dir/fileio.sh"
+# shellcheck source=../fiotransfer
+source "$repo_dir/fiotransfer"
 
 printf 'abcdefghijklmnopqrstuvwxyz0123456789' >"$test_dir/source.bin"
+
+# Read-only provider subcommands expose configuration, local quota usage, and
+# the result of the same health probes used by upload routing.
+providers_output=$(FIOTRANSFER_PROVIDERS=temp,fileio fiotransfer providers)
+grep -q 'Loaded providers (2)' <<<"$providers_output"
+grep -q '^  temp$' <<<"$providers_output"
+grep -q '^  fileio$' <<<"$providers_output"
+[[ $(FIOTRANSFER_PROVIDERS=temp,fileio fiotransfer loaded-providers) == "$providers_output" ]]
+
+limits_output=$(fiotransfer usage-limits)
+grep -Eq '^fileio +2 GB +4 GB$' <<<"$limits_output"
+grep -Eq '^uguu +128 MiB +not published$' <<<"$limits_output"
+
+printf '%s fileio 1000000000\n' "$(date +%s)" >"$test_dir/state/usage"
+usage_output=$(fiotransfer usage)
+grep -Eq '^fileio +1 GB +3 GB$' <<<"$usage_output"
+grep -Eq '^temp +not tracked +unknown$' <<<"$usage_output"
+
+export MOCK_UNRESPONSIVE_URL=https://0x0.st/
+unresponsive_output=$(fiotransfer unresponsive-providers)
+[[ $unresponsive_output == 0x0 ]]
+status_output=$(fiotransfer status)
+grep -Eq '^fileio +responsive +10 ms +2 GB +1 GB / 4 GB$' <<<"$status_output"
+grep -Eq '^0x0 +unresponsive +- +512 MiB +not tracked$' <<<"$status_output"
+unset MOCK_UNRESPONSIVE_URL
+grep -q 'All loaded providers are responsive' <<<"$(fiotransfer unresponsive)"
+
+grep -q 'fiotransfer status' <<<"$(fiotransfer --help)"
 
 # Leave file.io only twelve bytes of its rolling-hour allowance. Its lower
 # measured latency wins the first part; temp.sh must carry the remainder.
@@ -170,8 +199,8 @@ install_home="$test_dir/install-home"
 mkdir -p "$install_home"
 HOME="$install_home" XDG_DATA_HOME="$install_home/data" \
     XDG_STATE_HOME="$install_home/state" "$repo_dir/install.sh" >/dev/null
-test -f "$install_home/data/fiotransfer/fileio.sh"
-if git -C "$repo_dir" diff --quiet HEAD -- fileio.sh install.sh; then
+test -f "$install_home/data/fiotransfer/fiotransfer"
+if git -C "$repo_dir" diff --quiet HEAD -- fiotransfer install.sh; then
     [[ $(<"$install_home/state/fiotransfer/installed-revision") == \
         "$(git -C "$repo_dir" rev-parse HEAD)" ]]
 else
@@ -180,15 +209,15 @@ fi
 
 export XDG_DATA_HOME="$test_dir/data"
 mkdir -p "$XDG_DATA_HOME/fiotransfer"
-cp -- "$repo_dir/fileio.sh" "$XDG_DATA_HOME/fiotransfer/fileio.sh"
+cp -- "$repo_dir/fiotransfer" "$XDG_DATA_HOME/fiotransfer/fiotransfer"
 mkdir -p "$XDG_STATE_HOME/fiotransfer"
 printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     >"$XDG_STATE_HOME/fiotransfer/installed-revision"
-sed '1s/$/ (updated)/' "$repo_dir/fileio.sh" >"$test_dir/update-source.sh"
+sed '1s/$/ (updated)/' "$repo_dir/fiotransfer" >"$test_dir/update-source.sh"
 export MOCK_UPDATE_SOURCE="$test_dir/update-source.sh"
-source "$XDG_DATA_HOME/fiotransfer/fileio.sh"
+source "$XDG_DATA_HOME/fiotransfer/fiotransfer"
 fiotransfer update >"$test_dir/update.log"
-cmp "$test_dir/update-source.sh" "$XDG_DATA_HOME/fiotransfer/fileio.sh"
+cmp "$test_dir/update-source.sh" "$XDG_DATA_HOME/fiotransfer/fiotransfer"
 grep -q 'fiotransfer updated successfully' "$test_dir/update.log"
 test "$(find "$XDG_STATE_HOME/fiotransfer/backups" -type f | wc -l)" -eq 1
 [[ $(<"$XDG_STATE_HOME/fiotransfer/installed-revision") == \

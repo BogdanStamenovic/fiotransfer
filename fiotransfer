@@ -2,21 +2,64 @@
 # Requires Bash 4+, curl, coreutils, and base64.
 
 fiotransfer() {
-    if (( $# != 1 )); then
-        printf 'Usage: fiotransfer FILE\n       fiotransfer update\n       fiotransfer uninstall\n' >&2
+    if (( $# == 0 )); then
+        _fiotransfer_usage >&2
         return 2
     fi
 
     local file=$1
 
-    if [[ $file == uninstall ]]; then
-        _fiotransfer_uninstall
-        return
-    fi
-    if [[ $file == update ]]; then
-        _fiotransfer_update
-        return
-    fi
+    case $file in
+        help|-h|--help)
+            (( $# == 1 )) || { _fiotransfer_usage >&2; return 2; }
+            _fiotransfer_usage
+            return
+            ;;
+        uninstall)
+            (( $# == 1 )) || { _fiotransfer_usage >&2; return 2; }
+            _fiotransfer_uninstall
+            return
+            ;;
+        update)
+            (( $# == 1 )) || { _fiotransfer_usage >&2; return 2; }
+            _fiotransfer_update
+            return
+            ;;
+        providers|loaded-providers)
+            (( $# == 1 )) || { _fiotransfer_usage >&2; return 2; }
+            _fiotransfer_provider_report providers
+            return
+            ;;
+        limits|usage-limits)
+            (( $# == 1 )) || { _fiotransfer_usage >&2; return 2; }
+            _fiotransfer_provider_report limits
+            return
+            ;;
+        usage)
+            (( $# == 1 )) || { _fiotransfer_usage >&2; return 2; }
+            _fiotransfer_provider_report usage
+            return
+            ;;
+        unresponsive|unresponsive-providers)
+            (( $# == 1 )) || { _fiotransfer_usage >&2; return 2; }
+            _fiotransfer_provider_report unresponsive
+            return
+            ;;
+        status)
+            (( $# == 1 )) || { _fiotransfer_usage >&2; return 2; }
+            _fiotransfer_provider_report status
+            return
+            ;;
+        --)
+            shift
+            (( $# == 1 )) || { _fiotransfer_usage >&2; return 2; }
+            file=$1
+            ;;
+        *)
+            (( $# == 1 )) || { _fiotransfer_usage >&2; return 2; }
+            ;;
+    esac
+
     if [[ ! -f $file ]]; then
         printf 'fiotransfer: not a regular file: %s\n' "$file" >&2
         return 2
@@ -141,6 +184,20 @@ fiotransfer() {
     printf 'Download with: fioget %q\n' "$locator"
 }
 
+_fiotransfer_usage() {
+    printf '%s\n' \
+        'Usage: fiotransfer FILE' \
+        '       fiotransfer providers' \
+        '       fiotransfer limits' \
+        '       fiotransfer usage' \
+        '       fiotransfer unresponsive' \
+        '       fiotransfer status' \
+        '       fiotransfer update' \
+        '       fiotransfer uninstall' \
+        '' \
+        'Use "fiotransfer -- FILE" when FILE has the same name as a command.'
+}
+
 _fiotransfer_uninstall() {
     local answer bashrc=${HOME}/.bashrc data_home install_dir install_file
     local start_marker='# >>> fiotransfer >>>'
@@ -149,7 +206,7 @@ _fiotransfer_uninstall() {
 
     data_home=${XDG_DATA_HOME:-"${HOME}/.local/share"}
     install_dir=${data_home}/fiotransfer
-    install_file=${install_dir}/fileio.sh
+    install_file=${install_dir}/fiotransfer
 
     printf 'This will remove fiotransfer from %s and %s.\n' "$install_dir" "$bashrc"
     printf 'Are you sure? [y/N] '
@@ -211,7 +268,7 @@ _fiotransfer_update() {
 
     data_home=${XDG_DATA_HOME:-"${HOME}/.local/share"}
     install_dir=${data_home}/fiotransfer
-    install_file=${install_dir}/fileio.sh
+    install_file=${install_dir}/fiotransfer
     source_file=$(readlink -f -- "${BASH_SOURCE[0]}")
     if [[ $source_file != "$(readlink -m -- "$install_file")" || ! -f $install_file ]]; then
         printf 'fiotransfer update: this copy is not installer-managed; run ./install.sh first\n' >&2
@@ -262,9 +319,9 @@ _fiotransfer_update() {
             return 1
         fi
     fi
-    update_url="https://raw.githubusercontent.com/BogdanStamenovic/fiotransfer/${remote_revision}/fileio.sh"
+    update_url="https://raw.githubusercontent.com/BogdanStamenovic/fiotransfer/${remote_revision}/fiotransfer"
 
-    if ! temporary_file=$(mktemp "${install_dir}/.fileio.sh.update.XXXXXX"); then
+    if ! temporary_file=$(mktemp "${install_dir}/.fiotransfer.update.XXXXXX"); then
         printf 'fiotransfer update: could not stage the update\n' >&2
         return 1
     fi
@@ -293,7 +350,7 @@ _fiotransfer_update() {
 
     backup_dir=${state_home}/backups
     timestamp=$(date -u +%Y%m%dT%H%M%SZ)
-    backup_file=${backup_dir}/fileio.sh.${timestamp}
+    backup_file=${backup_dir}/fiotransfer.${timestamp}
     if ! mkdir -p -- "$backup_dir" || ! cp -p -- "$install_file" "$backup_file"; then
         rm -f -- "$temporary_file"
         printf 'fiotransfer update: could not create backup\n' >&2
@@ -330,6 +387,7 @@ _fiotransfer_init_providers() {
     declare -gA _FIOTRANSFER_MAX_OBJECT=()
     declare -gA _FIOTRANSFER_HOURLY_LIMIT=()
     declare -gA _FIOTRANSFER_LATENCY=()
+    declare -gA _FIOTRANSFER_RESPONSIVE=()
     declare -gA _FIOTRANSFER_FAILED=()
     declare -gA _FIOTRANSFER_ENDPOINT=()
 
@@ -398,10 +456,141 @@ _fiotransfer_measure_latency() {
             seconds=${BASH_REMATCH[1]}
             fraction=${BASH_REMATCH[2]}000
             _FIOTRANSFER_LATENCY[$provider]=$((seconds * 1000 + 10#${fraction:0:3}))
+            _FIOTRANSFER_RESPONSIVE[$provider]=1
         else
             _FIOTRANSFER_LATENCY[$provider]=10000
+            _FIOTRANSFER_RESPONSIVE[$provider]=0
         fi
     done
+}
+
+_fiotransfer_human_bytes() {
+    local bytes=$1
+    if (( bytes >= 1000000000 )); then
+        printf '%d GB' "$((bytes / 1000000000))"
+    elif (( bytes >= 1048576 )); then
+        printf '%d MiB' "$((bytes / 1048576))"
+    elif (( bytes >= 1024 )); then
+        printf '%d KiB' "$((bytes / 1024))"
+    else
+        printf '%d B' "$bytes"
+    fi
+}
+
+# Read-only provider diagnostics. The aliases accepted by fiotransfer keep the
+# longer command names discoverable without making the everyday forms verbose.
+_fiotransfer_provider_report() {
+    local report=$1 provider hourly used remaining temp_dir='' health latency
+
+    if (( BASH_VERSINFO[0] < 4 )); then
+        printf 'fiotransfer: Bash 4 or newer is required\n' >&2
+        return 2
+    fi
+    if ! _fiotransfer_init_providers ''; then return 2; fi
+
+    if [[ $report == unresponsive || $report == status ]]; then
+        local command
+        for command in curl mktemp; do
+            if ! command -v "$command" >/dev/null 2>&1; then
+                printf 'fiotransfer: %s is required\n' "$command" >&2
+                return 127
+            fi
+        done
+        if ! temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/fiotransfer.XXXXXX"); then
+            printf 'fiotransfer: could not create a temporary directory\n' >&2
+            return 1
+        fi
+        trap 'rm -rf -- "$temp_dir"' RETURN
+        _FIOTRANSFER_PROBE_DIR=$temp_dir
+        _fiotransfer_measure_latency "$temp_dir"
+    fi
+
+    case $report in
+        providers)
+            printf 'Loaded providers (%d):\n' "${#_FIOTRANSFER_PROVIDERS[@]}"
+            printf '  %s\n' "${_FIOTRANSFER_PROVIDERS[@]}"
+            ;;
+        limits)
+            printf '%-12s %-18s %s\n' PROVIDER OBJECT_LIMIT HOURLY_LIMIT
+            for provider in "${_FIOTRANSFER_PROVIDERS[@]}"; do
+                hourly=${_FIOTRANSFER_HOURLY_LIMIT[$provider]}
+                if (( hourly > 0 )); then
+                    printf '%-12s %-18s %s\n' "$provider" \
+                        "$(_fiotransfer_human_bytes "${_FIOTRANSFER_MAX_OBJECT[$provider]}")" \
+                        "$(_fiotransfer_human_bytes "$hourly")"
+                else
+                    printf '%-12s %-18s %s\n' "$provider" \
+                        "$(_fiotransfer_human_bytes "${_FIOTRANSFER_MAX_OBJECT[$provider]}")" 'not published'
+                fi
+            done
+            ;;
+        usage)
+            local command
+            for command in date awk; do
+                if ! command -v "$command" >/dev/null 2>&1; then
+                    printf 'fiotransfer: %s is required\n' "$command" >&2
+                    return 127
+                fi
+            done
+            printf '%-12s %-18s %s\n' PROVIDER LAST_HOUR REMAINING
+            for provider in "${_FIOTRANSFER_PROVIDERS[@]}"; do
+                hourly=${_FIOTRANSFER_HOURLY_LIMIT[$provider]}
+                if (( hourly > 0 )); then
+                    used=$(_fiotransfer_recent_usage "$provider")
+                    remaining=$((hourly - used))
+                    (( remaining < 0 )) && remaining=0
+                    printf '%-12s %-18s %s\n' "$provider" \
+                        "$(_fiotransfer_human_bytes "$used")" \
+                        "$(_fiotransfer_human_bytes "$remaining")"
+                else
+                    printf '%-12s %-18s %s\n' "$provider" 'not tracked' 'unknown'
+                fi
+            done
+            ;;
+        unresponsive)
+            health=0
+            for provider in "${_FIOTRANSFER_PROVIDERS[@]}"; do
+                if [[ ${_FIOTRANSFER_RESPONSIVE[$provider]:-0} == 0 ]]; then
+                    printf '%s\n' "$provider"
+                    health=1
+                fi
+            done
+            (( health == 1 )) || printf 'All loaded providers are responsive.\n'
+            ;;
+        status)
+            local command
+            for command in date awk; do
+                if ! command -v "$command" >/dev/null 2>&1; then
+                    printf 'fiotransfer: %s is required\n' "$command" >&2
+                    return 127
+                fi
+            done
+            printf '%-12s %-12s %-12s %-18s %s\n' PROVIDER HEALTH LATENCY OBJECT_LIMIT HOURLY_USAGE
+            for provider in "${_FIOTRANSFER_PROVIDERS[@]}"; do
+                if [[ ${_FIOTRANSFER_RESPONSIVE[$provider]:-0} == 1 ]]; then
+                    health=responsive
+                    latency="${_FIOTRANSFER_LATENCY[$provider]} ms"
+                else
+                    health=unresponsive
+                    latency='-'
+                fi
+                hourly=${_FIOTRANSFER_HOURLY_LIMIT[$provider]}
+                if (( hourly > 0 )); then
+                    used=$(_fiotransfer_recent_usage "$provider")
+                    used="$(_fiotransfer_human_bytes "$used") / $(_fiotransfer_human_bytes "$hourly")"
+                else
+                    used='not tracked'
+                fi
+                printf '%-12s %-12s %-12s %-18s %s\n' "$provider" "$health" "$latency" \
+                    "$(_fiotransfer_human_bytes "${_FIOTRANSFER_MAX_OBJECT[$provider]}")" "$used"
+            done
+            ;;
+    esac
+
+    if [[ -n $temp_dir ]]; then
+        trap - RETURN
+        rm -rf -- "$temp_dir"
+    fi
 }
 
 _fiotransfer_recent_usage() {

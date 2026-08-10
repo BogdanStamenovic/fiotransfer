@@ -6,6 +6,8 @@ file hosts:
 - `fiotransfer FILE` uploads a file and prints a compact share code.
 - `fiotransfer update` safely updates an installer-managed copy from GitHub.
 - `fiotransfer uninstall` removes an installer-managed installation.
+- `fiotransfer status` reports loaded providers, reachability, limits, and
+  locally tracked usage.
 - `fioget CODE_OR_URL [OUTPUT_FILE]` downloads it, assembling large and
   multi-provider uploads automatically.
 
@@ -34,7 +36,7 @@ cd fiotransfer
 ./install.sh
 ```
 
-The installer copies `fileio.sh` to
+The installer copies `fiotransfer` to
 `${XDG_DATA_HOME:-$HOME/.local/share}/fiotransfer/`, adds a marked source block
 to `~/.bashrc`, and can safely be run again to update an existing installation.
 Open a new terminal or reload the current shell:
@@ -82,6 +84,20 @@ fioget https://file.io/Ab3-xY9
 ```
 
 Run either command without arguments to see its usage summary.
+
+Inspect the configured providers without uploading anything:
+
+```bash
+fiotransfer providers       # providers loaded from FIOTRANSFER_PROVIDERS
+fiotransfer limits          # per-object and published hourly limits
+fiotransfer usage           # locally observed rolling-hour usage
+fiotransfer unresponsive    # providers that fail a live endpoint probe
+fiotransfer status          # combined live overview
+```
+
+The longer aliases `loaded-providers`, `usage-limits`, and
+`unresponsive-providers` are also accepted. Live checks use the same endpoint
+probe and timeouts as upload routing; they do not upload data.
 
 ## How it works
 

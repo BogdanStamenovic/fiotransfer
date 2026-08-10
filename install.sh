@@ -13,10 +13,10 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-source_file=${script_dir}/fileio.sh
+source_file=${script_dir}/fiotransfer
 data_home=${XDG_DATA_HOME:-"${HOME}/.local/share"}
 install_dir=${data_home}/fiotransfer
-install_file=${install_dir}/fileio.sh
+install_file=${install_dir}/fiotransfer
 state_home=${XDG_STATE_HOME:-"${HOME}/.local/state"}
 state_dir=${state_home}/fiotransfer
 revision_file=${state_dir}/installed-revision
@@ -25,12 +25,12 @@ start_marker='# >>> fiotransfer >>>'
 end_marker='# <<< fiotransfer <<<'
 
 if [[ ! -f $source_file ]]; then
-    printf 'install: fileio.sh was not found next to install.sh\n' >&2
+    printf 'install: fiotransfer was not found next to install.sh\n' >&2
     exit 1
 fi
 
 mkdir -p -- "$install_dir"
-temporary_script=$(mktemp "${install_dir}/.fileio.sh.XXXXXX")
+temporary_script=$(mktemp "${install_dir}/.fiotransfer.XXXXXX")
 temporary_bashrc=''
 trap 'rm -f -- "$temporary_script" "$temporary_bashrc"' EXIT
 
@@ -43,7 +43,7 @@ temporary_script=''
 # from an exported archive still work; the updater will establish metadata on
 # its first successful check.
 if command -v git >/dev/null 2>&1 && \
-    git -C "$script_dir" diff --quiet HEAD -- fileio.sh install.sh && \
+    git -C "$script_dir" diff --quiet HEAD -- fiotransfer install.sh && \
     revision=$(git -C "$script_dir" rev-parse HEAD 2>/dev/null) && \
     [[ $revision =~ ^[0-9a-f]{40}$ ]]; then
     mkdir -p -- "$state_dir"
