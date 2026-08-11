@@ -229,6 +229,15 @@ grep -q 'fileio failed; trying another provider' "$test_dir/fallback.log"
 fioget "$fallback_code" "$test_dir/fallback.bin" >/dev/null
 cmp "$test_dir/source.bin" "$test_dir/fallback.bin"
 
+# A single-part V3 download must prefer its embedded original name over the
+# provider-generated URL path.
+mkdir "$test_dir/single-named-download"
+(
+    cd "$test_dir/single-named-download"
+    fioget "$fallback_code" >/dev/null
+)
+cmp "$test_dir/source.bin" "$test_dir/single-named-download/source.bin"
+
 # Locator parsing retains old bare file.io codes and supports all new forms.
 [[ $(_fiotransfer_locator_to_url old_key) == https://file.io/old_key ]]
 [[ $(_fiotransfer_locator_to_url f:new_key) == https://file.io/new_key ]]

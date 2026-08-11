@@ -1055,7 +1055,14 @@ _fiotransfer_download_chain() {
 
     if [[ -n $requested_output ]]; then
         output=$requested_output
-    elif (( ${#parts[@]} == 1 )); then
+    elif [[ -n $encoded_name ]]; then
+        if ! decoded_name=$(printf '%s' "$encoded_name" | base64 -d 2>/dev/null); then
+            printf 'fioget: invalid original filename in multipart header\n' >&2
+            return 1
+        fi
+        output=${decoded_name##*/}
+        if [[ -z $output || $output == . || $output == .. ]]; then output=download; fi
+    else
         remote_name=$(awk 'BEGIN { IGNORECASE=1 }
             /^Content-Disposition:/ {
                 if (match($0, /filename="[^"]+"/)) {
@@ -1068,13 +1075,6 @@ _fiotransfer_download_chain() {
             output=${url%%\?*}
             output=${output##*/}
         fi
-        if [[ -z $output || $output == . || $output == .. ]]; then output=download; fi
-    else
-        if ! decoded_name=$(printf '%s' "$encoded_name" | base64 -d 2>/dev/null); then
-            printf 'fioget: invalid original filename in multipart header\n' >&2
-            return 1
-        fi
-        output=${decoded_name##*/}
         if [[ -z $output || $output == . || $output == .. ]]; then output=download; fi
     fi
 
