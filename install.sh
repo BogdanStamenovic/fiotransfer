@@ -20,6 +20,7 @@ install_file=${install_dir}/fiotransfer.sh
 state_home=${XDG_STATE_HOME:-"${HOME}/.local/state"}
 state_dir=${state_home}/fiotransfer
 revision_file=${state_dir}/installed-revision
+message_file=${state_dir}/installed-commit-message
 bashrc=${HOME}/.bashrc
 start_marker='# >>> fiotransfer >>>'
 end_marker='# <<< fiotransfer <<<'
@@ -48,6 +49,9 @@ if command -v git >/dev/null 2>&1 && \
     [[ $revision =~ ^[0-9a-f]{40}$ ]]; then
     mkdir -p -- "$state_dir"
     printf '%s\n' "$revision" >"$revision_file"
+    git -C "$script_dir" log -1 --format=%s HEAD >"$message_file"
+else
+    rm -f -- "$revision_file" "$message_file"
 fi
 
 touch -- "$bashrc"

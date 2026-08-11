@@ -109,6 +109,11 @@ fiotransfer unresponsive    # providers that fail a live endpoint probe
 fiotransfer status          # combined live overview
 ```
 
+`fiotransfer status` starts with the running copy's revision and commit
+subject, followed by the live provider overview. Installer-managed copies read
+this version information from local update metadata, so it remains available
+without another GitHub request.
+
 The longer aliases `loaded-providers`, `usage-limits`, and
 `unresponsive-providers` are also accepted. Live checks use the same endpoint
 probe and timeouts as upload routing; they do not upload data.
@@ -217,8 +222,10 @@ installed file at a commit-pinned URL, verifies that GitHub's current revision
 is a fast-forward from the installed revision, checks Bash syntax and required
 entry points, detects an already-current copy, creates a timestamped backup,
 atomically replaces the installed script, and reloads it into the current
-shell. It refuses rewritten/divergent update history and refuses to modify a
-copy sourced directly from a clone or any location not managed by the
+shell. While it runs, it reports the installed and available revisions and
+commit subject along with each verification, download, backup, installation,
+and reload stage. It refuses rewritten/divergent update history and refuses to
+modify a copy sourced directly from a clone or any location not managed by the
 installer.
 
 Backups are stored in:

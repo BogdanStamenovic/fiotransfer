@@ -73,7 +73,11 @@ fi
 
 case $url in
     https://api.github.com/repos/BogdanStamenovic/fiotransfer/commits/main)
-        printf '{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}\n'
+        printf '{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","commit":{"message":"Explain \\"update\\" details\\n\\nMore context"}}\n'
+        exit 0
+        ;;
+    https://api.github.com/repos/BogdanStamenovic/fiotransfer/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)
+        printf '{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","commit":{"message":"Previous release"}}\n'
         exit 0
         ;;
     https://api.github.com/repos/BogdanStamenovic/fiotransfer/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)
@@ -139,6 +143,9 @@ unresponsive_output=$(fiotransfer unresponsive-providers)
 [[ $unresponsive_output == 0x0 ]]
 status_output=$(FIOTRANSFER_PROVIDERS=fileio,temp,litterbox,0x0,uguu \
     fiotransfer status)
+grep -q '^VERSION$' <<<"$status_output"
+grep -Eq '^  Revision: [0-9a-f]{12} \(Git checkout\)$' <<<"$status_output"
+grep -q '^  Commit:   ' <<<"$status_output"
 grep -Eq '^fileio +responsive +10 ms +2 GB +1 GB / 4 GB$' <<<"$status_output"
 grep -Eq '^0x0 +unresponsive +- +512 MiB +not tracked$' <<<"$status_output"
 unset MOCK_UNRESPONSIVE_URL
@@ -253,8 +260,11 @@ test -f "$install_home/data/fiotransfer/fiotransfer.sh"
 if git -C "$repo_dir" diff --quiet HEAD -- fiotransfer.sh install.sh; then
     [[ $(<"$install_home/state/fiotransfer/installed-revision") == \
         "$(git -C "$repo_dir" rev-parse HEAD)" ]]
+    [[ $(<"$install_home/state/fiotransfer/installed-commit-message") == \
+        "$(git -C "$repo_dir" log -1 --format=%s HEAD)" ]]
 else
     test ! -e "$install_home/state/fiotransfer/installed-revision"
+    test ! -e "$install_home/state/fiotransfer/installed-commit-message"
 fi
 
 export XDG_DATA_HOME="$test_dir/data"
@@ -266,12 +276,24 @@ printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
 sed '1s/$/ (updated)/' "$repo_dir/fiotransfer.sh" >"$test_dir/update-source.sh"
 export MOCK_UPDATE_SOURCE="$test_dir/update-source.sh"
 source "$XDG_DATA_HOME/fiotransfer/fiotransfer.sh"
+legacy_status=$(FIOTRANSFER_PROVIDERS=temp fiotransfer status)
+grep -q '^  Commit:   Previous release$' <<<"$legacy_status"
+[[ $(<"$XDG_STATE_HOME/fiotransfer/installed-commit-message") == 'Previous release' ]]
 fiotransfer update >"$test_dir/update.log"
 cmp "$test_dir/update-source.sh" "$XDG_DATA_HOME/fiotransfer/fiotransfer.sh"
 grep -q 'fiotransfer updated successfully' "$test_dir/update.log"
+grep -q '^Current:  aaaaaaaaaaaa  Previous release$' "$test_dir/update.log"
+grep -q '^Latest:   bbbbbbbbbbbb  Explain "update" details$' "$test_dir/update.log"
+grep -q '^Verifying that the update is a fast-forward' "$test_dir/update.log"
+grep -q '^Validating Bash syntax' "$test_dir/update.log"
 test "$(find "$XDG_STATE_HOME/fiotransfer/backups" -type f | wc -l)" -eq 1
 [[ $(<"$XDG_STATE_HOME/fiotransfer/installed-revision") == \
     bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ]]
+[[ $(<"$XDG_STATE_HOME/fiotransfer/installed-commit-message") == \
+    'Explain "update" details' ]]
+updated_status=$(FIOTRANSFER_PROVIDERS=temp fiotransfer status)
+grep -q '^  Revision: bbbbbbbbbbbb (installer-managed)$' <<<"$updated_status"
+grep -q '^  Commit:   Explain "update" details$' <<<"$updated_status"
 fiotransfer update >"$test_dir/update-current.log"
 grep -q 'already up to date' "$test_dir/update-current.log"
 

@@ -47,6 +47,8 @@ fiotransfer() {
             ;;
         status)
             (( $# == 1 )) || { _fiotransfer_usage >&2; return 2; }
+            _fiotransfer_version_report
+            printf '\n'
             _fiotransfer_provider_report status
             return
             ;;
@@ -247,9 +249,10 @@ _fiotransfer_uninstall() {
 # current installation is backed up and atomically replaced.
 _fiotransfer_update() {
     local data_home install_dir install_file source_file temporary_file
-    local state_home backup_dir backup_file timestamp command revision_file
+    local state_home backup_dir backup_file timestamp command revision_file message_file
     local api_root=https://api.github.com/repos/BogdanStamenovic/fiotransfer
-    local remote_response remote_revision installed_revision='' compare_response update_url
+    local remote_response remote_revision remote_message installed_revision='' installed_message=''
+    local compare_response update_url
     local sha_pattern='"sha"[[:space:]]*:[[:space:]]*"([0-9a-f]{40})"'
     local ahead_pattern='"status"[[:space:]]*:[[:space:]]*"ahead"'
 
@@ -280,12 +283,25 @@ _fiotransfer_update() {
         state_home=${HOME}/.local/state/fiotransfer
     fi
     revision_file=${state_home}/installed-revision
+    message_file=${state_home}/installed-commit-message
     if [[ -r $revision_file ]]; then
         installed_revision=$(<"$revision_file")
         if [[ ! $installed_revision =~ ^[0-9a-f]{40}$ ]]; then
             printf 'fiotransfer update: invalid installed revision metadata\n' >&2
             return 1
         fi
+    fi
+    if [[ -r $message_file ]]; then
+        IFS= read -r installed_message <"$message_file" || true
+    fi
+
+    printf 'Checking fiotransfer for updates...\n'
+    if [[ -n $installed_revision ]]; then
+        printf 'Current:  %.12s' "$installed_revision"
+        [[ -n $installed_message ]] && printf '  %s' "$installed_message"
+        printf '\n'
+    else
+        printf 'Current:  revision metadata unavailable\n'
     fi
 
     if ! remote_response=$(curl --fail --location --show-error --silent \
@@ -299,10 +315,15 @@ _fiotransfer_update() {
         printf 'fiotransfer update: GitHub returned an unexpected revision response\n' >&2
         return 1
     fi
+    remote_message=$(_fiotransfer_commit_subject_from_json "$remote_response")
+    printf 'Latest:   %.12s' "$remote_revision"
+    [[ -n $remote_message ]] && printf '  %s' "$remote_message"
+    printf '\n'
 
     # Match auto-update-changer's forward-only rule when installation metadata
     # is available. This refuses rewritten or divergent main-branch history.
     if [[ -n $installed_revision && $installed_revision != "$remote_revision" ]]; then
+        printf 'Verifying that the update is a fast-forward...\n'
         if ! compare_response=$(curl --fail --location --show-error --silent \
             "${api_root}/compare/${installed_revision}...${remote_revision}"); then
             printf 'fiotransfer update: could not verify forward update history\n' >&2
@@ -315,6 +336,7 @@ _fiotransfer_update() {
     fi
     update_url="https://raw.githubusercontent.com/BogdanStamenovic/fiotransfer/${remote_revision}/fiotransfer.sh"
 
+    printf 'Downloading the commit-pinned update...\n'
     if ! temporary_file=$(mktemp "${install_dir}/.fiotransfer.sh.update.XXXXXX"); then
         printf 'fiotransfer update: could not stage the update\n' >&2
         return 1
@@ -325,6 +347,7 @@ _fiotransfer_update() {
         printf 'fiotransfer update: could not download the current main-branch version\n' >&2
         return 1
     fi
+    printf 'Validating Bash syntax and fiotransfer entry points...\n'
     if ! bash -n "$temporary_file" || \
         ! grep -Fq 'fiotransfer() {' "$temporary_file" || \
         ! grep -Fq 'fioget() {' "$temporary_file" || \
@@ -337,19 +360,22 @@ _fiotransfer_update() {
         rm -f -- "$temporary_file"
         if mkdir -p -- "$state_home"; then
             printf '%s\n' "$remote_revision" >"$revision_file"
+            printf '%s\n' "$remote_message" >"$message_file"
         fi
-        printf 'fiotransfer is already up to date.\n'
+        printf 'Result: fiotransfer is already up to date.\n'
         return 0
     fi
 
     backup_dir=${state_home}/backups
     timestamp=$(date -u +%Y%m%dT%H%M%SZ)
     backup_file=${backup_dir}/fiotransfer.sh.${timestamp}
+    printf 'Backing up the installed script...\n'
     if ! mkdir -p -- "$backup_dir" || ! cp -p -- "$install_file" "$backup_file"; then
         rm -f -- "$temporary_file"
         printf 'fiotransfer update: could not create backup\n' >&2
         return 1
     fi
+    printf 'Installing revision %.12s and reloading it...\n' "$remote_revision"
     chmod --reference="$install_file" "$temporary_file" 2>/dev/null || chmod 0644 "$temporary_file"
     if ! mv -- "$temporary_file" "$install_file"; then
         rm -f -- "$temporary_file"
@@ -357,11 +383,95 @@ _fiotransfer_update() {
         return 1
     fi
     printf '%s\n' "$remote_revision" >"$revision_file"
+    printf '%s\n' "$remote_message" >"$message_file"
 
     # Load the validated replacement now so a new terminal is not required.
     # shellcheck source=/dev/null
     source "$install_file"
-    printf 'fiotransfer updated successfully.\nBackup: %s\n' "$backup_file"
+    printf 'Result: fiotransfer updated successfully.\nBackup: %s\n' "$backup_file"
+}
+
+# Extract the first line of the commit message from GitHub's commit response.
+# GitHub JSON escapes embedded newlines, so the subject is available before
+# the first literal "\\n" without requiring a general-purpose JSON parser.
+_fiotransfer_commit_subject_from_json() {
+    local response=$1 subject='' character
+    local index escaped=0
+
+    if [[ $response == *'"message"'* ]]; then
+        response=${response#*\"message\"}
+        response=${response#*:}
+        response=${response#*\"}
+        for ((index = 0; index < ${#response}; index++)); do
+            character=${response:index:1}
+            if (( escaped )); then
+                case $character in
+                    n|r) break ;;
+                    t) subject+=' ' ;;
+                    *) subject+=$character ;;
+                esac
+                escaped=0
+            elif [[ $character == \\ ]]; then
+                escaped=1
+            elif [[ $character == '"' ]]; then
+                break
+            else
+                subject+=$character
+            fi
+        done
+    fi
+    printf '%s\n' "$subject"
+}
+
+_fiotransfer_version_report() {
+    local data_home install_file source_file source_dir state_home
+    local revision_file message_file revision='' message='' origin='unknown'
+    local api_root=https://api.github.com/repos/BogdanStamenovic/fiotransfer
+    local response
+
+    data_home=${XDG_DATA_HOME:-"${HOME}/.local/share"}
+    install_file=${data_home}/fiotransfer/fiotransfer.sh
+    source_file=$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")
+    if [[ -n ${XDG_STATE_HOME:-} ]]; then
+        state_home=${XDG_STATE_HOME}/fiotransfer
+    else
+        state_home=${HOME}/.local/state/fiotransfer
+    fi
+    revision_file=${state_home}/installed-revision
+    message_file=${state_home}/installed-commit-message
+
+    if [[ $source_file == "$(readlink -m -- "$install_file" 2>/dev/null)" && -r $revision_file ]]; then
+        revision=$(<"$revision_file")
+        [[ -r $message_file ]] && IFS= read -r message <"$message_file" || true
+        origin='installer-managed'
+        # Upgrade metadata created by older fiotransfer releases. This is a
+        # one-time best-effort lookup; later status calls remain local.
+        if [[ $revision =~ ^[0-9a-f]{40}$ && -z $message ]] && \
+            command -v curl >/dev/null 2>&1 && \
+            response=$(curl --fail --location --silent "${api_root}/commits/${revision}" 2>/dev/null); then
+            message=$(_fiotransfer_commit_subject_from_json "$response")
+            if [[ -n $message ]] && mkdir -p -- "$state_home" 2>/dev/null; then
+                printf '%s\n' "$message" >"$message_file" 2>/dev/null || true
+            fi
+        fi
+    else
+        source_dir=${source_file%/*}
+        if command -v git >/dev/null 2>&1 && \
+            revision=$(git -C "$source_dir" rev-parse HEAD 2>/dev/null) && \
+            [[ $revision =~ ^[0-9a-f]{40}$ ]]; then
+            message=$(git -C "$source_dir" log -1 --format=%s HEAD 2>/dev/null || true)
+            origin='Git checkout'
+        fi
+    fi
+
+    printf 'VERSION\n'
+    if [[ $revision =~ ^[0-9a-f]{40}$ ]]; then
+        printf '  Revision: %.12s (%s)\n' "$revision" "$origin"
+        printf '  Commit:   %s\n' "${message:-unavailable}"
+    else
+        printf '  Revision: unavailable\n'
+        printf '  Commit:   unavailable\n'
+    fi
 }
 
 # Build the enabled provider table. Limits are bytes per uploaded object and
