@@ -261,12 +261,37 @@ cmp "$test_dir/source.bin" "$test_dir/uguu.bin"
 
 # The updater stages, validates, backs up, atomically replaces, and reloads an
 # installer-managed script.
-install_home="$test_dir/install-home"
+install_home="$test_dir/install home"
 mkdir -p "$install_home"
 HOME="$install_home" XDG_DATA_HOME="$install_home/data" \
-    XDG_STATE_HOME="$install_home/state" "$repo_dir/install.sh" >/dev/null
+    XDG_STATE_HOME="$install_home/state" SHELL=/bin/bash \
+    sh "$repo_dir/install.sh" >/dev/null
 test -f "$install_home/data/fiotransfer/fiotransfer.sh"
-if git -C "$repo_dir" diff --quiet HEAD -- fiotransfer.sh install.sh; then
+test -x "$install_home/.local/bin/fiotransfer"
+test -x "$install_home/.local/bin/fioget"
+grep -Fq "export PATH='$install_home/.local/bin':\"\$PATH\"" "$install_home/.bashrc"
+[[ $(grep -Fc '# >>> fiotransfer >>>' "$install_home/.bashrc") == 1 ]]
+grep -q 'Loaded providers' <<<"$(HOME="$install_home" \
+    XDG_DATA_HOME="$install_home/data" "$install_home/.local/bin/fiotransfer" providers)"
+
+# Reinstallation is idempotent, and profile selection follows the login shell
+# rather than requiring the installer itself to run from that shell.
+HOME="$install_home" XDG_DATA_HOME="$install_home/data" \
+    XDG_STATE_HOME="$install_home/state" "$repo_dir/install.sh" >/dev/null
+[[ $(grep -Fc '# >>> fiotransfer >>>' "$install_home/.bashrc") == 1 ]]
+
+zsh_home="$test_dir/zsh-home"
+mkdir -p "$zsh_home"
+HOME="$zsh_home" SHELL=/bin/zsh "$repo_dir/install.sh" >/dev/null
+grep -Fq '# >>> fiotransfer >>>' "$zsh_home/.zshrc"
+test ! -e "$zsh_home/.bashrc"
+
+fish_home="$test_dir/fish-home"
+mkdir -p "$fish_home"
+HOME="$fish_home" SHELL=/usr/bin/fish "$repo_dir/install.sh" >/dev/null
+grep -Fq "fish_add_path '$fish_home/.local/bin'" \
+    "$fish_home/.config/fish/config.fish"
+if git -C "$repo_dir" diff --quiet HEAD -- fiotransfer.sh fiotransfer.ps1 install.sh install.ps1; then
     [[ $(<"$install_home/state/fiotransfer/installed-revision") == \
         "$(git -C "$repo_dir" rev-parse HEAD)" ]]
     [[ $(<"$install_home/state/fiotransfer/installed-commit-message") == \

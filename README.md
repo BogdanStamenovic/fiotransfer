@@ -31,13 +31,14 @@ FIOTRANSFER_PROVIDERS=fileio,temp,litterbox,0x0,uguu fiotransfer archive.zip
 
 ## Requirements
 
-- Bash 4 or newer
-- curl
-- GNU coreutils (`base64`, `dd`, `sha256sum`, `stat`, and `wc`)
+- On Linux and macOS: Bash 4 or newer, `curl`, and standard Unix tools;
+  either `sha256sum` or the macOS `shasum` is accepted. The interactive shell
+  may still be Bash, Zsh, Fish, or another shell.
+- On Windows: PowerShell 5 or newer. No Bash or Unix tools are required.
 
 ## Installation
 
-Clone the repository and run the installer:
+On Linux or macOS, clone the repository and run the installer from any shell:
 
 ```bash
 git clone https://github.com/BogdanStamenovic/fiotransfer.git
@@ -45,14 +46,28 @@ cd fiotransfer
 ./install.sh
 ```
 
-The installer copies `fiotransfer.sh` to
-`${XDG_DATA_HOME:-$HOME/.local/share}/fiotransfer/`, adds a marked source block
-to `~/.bashrc`, and can safely be run again to update an existing installation.
-Open a new terminal or reload the current shell:
+On Windows, run the native installer from PowerShell:
 
-```bash
-source ~/.bashrc
+```powershell
+git clone https://github.com/BogdanStamenovic/fiotransfer.git # or download the ZIP
+cd fiotransfer
+.\install.ps1
 ```
+
+The installers detect the platform and login shell, copy the implementation
+to a user-owned data directory, and put real `fiotransfer` and `fioget`
+commands in a user-owned bin directory. On Bash, Zsh, Fish, and other POSIX
+shells it updates the appropriate profile (`.bashrc`, `.bash_profile`,
+`.zshrc`, Fish's `config.fish`, or `.profile`). On Windows it updates the user
+`PATH`. It can safely be run again to repair or update an installation. Open a
+new terminal after it finishes; the commands do not depend on which interactive
+shell you use. The Windows implementation is native PowerShell and does not
+require Git Bash, WSL, Cygwin, or Unix command-line tools. Git is needed only
+if you choose to clone the repository instead of downloading its ZIP archive.
+
+macOS ships an older Bash. If a compatible Bash is not already available, the
+installer identifies that and prints the Homebrew command needed to install
+one; Homebrew Bash is detected automatically on the next run.
 
 ## Usage
 
@@ -246,6 +261,12 @@ public uploads:
 tests/run.sh
 ```
 
+The native Windows implementation has a matching local, mocked test suite:
+
+```powershell
+.\tests\run.ps1
+```
+
 ## Uninstall
 
 Run the built-in uninstaller:
@@ -254,9 +275,10 @@ Run the built-in uninstaller:
 fiotransfer uninstall
 ```
 
-It displays the affected paths and requires confirmation. It removes only the
-installed script and the block managed in `~/.bashrc`; it does not delete the
-cloned repository.
+It displays the affected paths and requires confirmation. It removes the
+installed commands, script, and the profile block managed by the Unix
+installer; it does not delete the cloned repository. On Windows it also
+removes the user `PATH` entry if the installer originally added it.
 
 ## License
 

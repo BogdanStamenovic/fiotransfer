@@ -1,5 +1,36 @@
-# Source this file from ~/.bashrc to add fiotransfer and fioget.
-# Requires Bash 4+, curl, coreutils, base64, and sha256sum.
+# Loaded by the installed command launchers (and may also be sourced manually).
+# Requires Bash 4+, curl, and standard Unix command-line tools.
+
+_fiotransfer_canonical_path() {
+    local path=$1 directory name
+    directory=${path%/*}
+    name=${path##*/}
+    [[ $directory != "$path" ]] || directory=.
+    directory=$(CDPATH= cd -P -- "$directory" 2>/dev/null && pwd) || return 1
+    printf '%s/%s\n' "$directory" "$name"
+}
+
+_fiotransfer_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum -- "$1" | awk '{ print $1 }'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 -- "$1" | awk '{ print $1 }'
+    else
+        return 127
+    fi
+}
+
+_fiotransfer_file_size() {
+    stat -c %s -- "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null || wc -c <"$1"
+}
+
+_fiotransfer_base64_decode() {
+    if [[ $(uname -s 2>/dev/null || true) == Darwin ]]; then
+        base64 -D 2>/dev/null
+    else
+        base64 -d 2>/dev/null
+    fi
+}
 
 fiotransfer() {
     if (( $# == 0 )); then
@@ -72,7 +103,7 @@ fiotransfer() {
     fi
 
     local command
-    for command in curl base64 dd stat wc date sha256sum; do
+    for command in curl base64 grep head tail wc date awk; do
         if ! command -v "$command" >/dev/null 2>&1; then
             printf 'fiotransfer: %s is required\n' "$command" >&2
             return 127
@@ -89,11 +120,10 @@ fiotransfer() {
         return 1
     fi
     file_size_mib=$(( (file_size + 1048575) / 1048576 ))
-    if ! file_digest=$(sha256sum -- "$file"); then
+    if ! file_digest=$(_fiotransfer_sha256 "$file"); then
         printf 'fiotransfer: could not checksum %s\n' "$file" >&2
         return 1
     fi
-    file_digest=${file_digest%% *}
 
     if ! temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/fiotransfer.XXXXXX"); then
         printf 'fiotransfer: could not create a temporary directory\n' >&2
@@ -121,7 +151,7 @@ fiotransfer() {
             printf 'FIOTRANSFER-CHAIN-V3\n%s\n%s\n%d\n%s\n\n' \
                 "${locator:--}" "$encoded_name" "$file_size" "$file_digest" \
                 >"$wrapper"
-            header_size=$(stat -c %s -- "$wrapper") || return 1
+            header_size=$(_fiotransfer_file_size "$wrapper") || return 1
 
             if ! _fiotransfer_select_provider "$header_size" \
                 "$((file_size - offset))"; then
@@ -195,29 +225,38 @@ _fiotransfer_usage() {
 }
 
 _fiotransfer_uninstall() {
-    local answer bashrc=${HOME}/.bashrc data_home install_dir install_file
+    local answer profile data_home install_dir install_file state_home state_dir bin_dir
     local start_marker='# >>> fiotransfer >>>'
     local end_marker='# <<< fiotransfer <<<'
-    local temp_file
+    local temp_file profile_file bin_dir_file
 
     data_home=${XDG_DATA_HOME:-"${HOME}/.local/share"}
     install_dir=${data_home}/fiotransfer
     install_file=${install_dir}/fiotransfer.sh
+    state_home=${XDG_STATE_HOME:-"${HOME}/.local/state"}
+    state_dir=${state_home}/fiotransfer
+    profile_file=${state_dir}/shell-profile
+    bin_dir_file=${state_dir}/bin-directory
+    profile=${HOME}/.bashrc
+    [[ -r $profile_file ]] && IFS= read -r profile <"$profile_file"
+    bin_dir=${XDG_BIN_HOME:-"${HOME}/.local/bin"}
+    [[ -r $bin_dir_file ]] && IFS= read -r bin_dir <"$bin_dir_file"
 
-    printf 'This will remove fiotransfer from %s and %s.\n' "$install_dir" "$bashrc"
+    printf 'This will remove fiotransfer from %s, %s, and %s.\n' \
+        "$install_dir" "$bin_dir" "$profile"
     printf 'Are you sure? [y/N] '
     if ! read -r answer </dev/tty; then
         printf '\nfiotransfer: unable to read confirmation; not uninstalled\n' >&2
         return 1
     fi
-    case ${answer,,} in
-        y|yes) ;;
+    case $answer in
+        y|Y|yes|YES|Yes) ;;
         *) printf 'Uninstall cancelled.\n'; return 0 ;;
     esac
 
-    if [[ -f $bashrc ]] && grep -Fqx "$start_marker" "$bashrc" && \
-        grep -Fqx "$end_marker" "$bashrc"; then
-        if ! temp_file=$(mktemp "${bashrc}.fiotransfer.XXXXXX"); then
+    if [[ -f $profile ]] && grep -Fqx "$start_marker" "$profile" && \
+        grep -Fqx "$end_marker" "$profile"; then
+        if ! temp_file=$(mktemp "${profile}.fiotransfer.XXXXXX"); then
             printf 'fiotransfer: could not create a temporary file\n' >&2
             return 1
         fi
@@ -225,20 +264,23 @@ _fiotransfer_uninstall() {
             $0 == start { managed = 1; next }
             $0 == end   { managed = 0; next }
             !managed    { print }
-        ' "$bashrc" >"$temp_file"; then
+        ' "$profile" >"$temp_file"; then
             rm -f -- "$temp_file"
-            printf 'fiotransfer: could not update %s\n' "$bashrc" >&2
+            printf 'fiotransfer: could not update %s\n' "$profile" >&2
             return 1
         fi
-        chmod --reference="$bashrc" "$temp_file" 2>/dev/null || true
-        if ! mv -- "$temp_file" "$bashrc"; then
+        chmod --reference="$profile" "$temp_file" 2>/dev/null || true
+        if ! mv -- "$temp_file" "$profile"; then
             rm -f -- "$temp_file"
-            printf 'fiotransfer: could not update %s\n' "$bashrc" >&2
+            printf 'fiotransfer: could not update %s\n' "$profile" >&2
             return 1
         fi
     fi
 
-    rm -f -- "$install_file"
+    rm -f -- "$bin_dir/fiotransfer" "$bin_dir/fioget" \
+        "$bin_dir/fiotransfer.cmd" "$bin_dir/fioget.cmd" \
+        "$install_dir/fiotransfer-launcher.sh" \
+        "$install_dir/fioget-launcher.sh" "$install_file"
     rmdir -- "$install_dir" 2>/dev/null || true
     printf 'fiotransfer has been uninstalled. Restart the shell to finish.\n'
     unset -f fioget fiotransfer
@@ -256,7 +298,7 @@ _fiotransfer_update() {
     local sha_pattern='"sha"[[:space:]]*:[[:space:]]*"([0-9a-f]{40})"'
     local ahead_pattern='"status"[[:space:]]*:[[:space:]]*"ahead"'
 
-    for command in curl bash cmp readlink; do
+    for command in curl bash cmp; do
         if ! command -v "$command" >/dev/null 2>&1; then
             printf 'fiotransfer update: %s is required\n' "$command" >&2
             return 127
@@ -266,8 +308,8 @@ _fiotransfer_update() {
     data_home=${XDG_DATA_HOME:-"${HOME}/.local/share"}
     install_dir=${data_home}/fiotransfer
     install_file=${install_dir}/fiotransfer.sh
-    source_file=$(readlink -f -- "${BASH_SOURCE[0]}")
-    if [[ $source_file != "$(readlink -m -- "$install_file")" || ! -f $install_file ]]; then
+    source_file=$(_fiotransfer_canonical_path "${BASH_SOURCE[0]}")
+    if [[ $source_file != "$(_fiotransfer_canonical_path "$install_file")" || ! -f $install_file ]]; then
         printf 'fiotransfer update: this copy is not installer-managed; run ./install.sh first\n' >&2
         return 1
     fi
@@ -431,7 +473,7 @@ _fiotransfer_version_report() {
 
     data_home=${XDG_DATA_HOME:-"${HOME}/.local/share"}
     install_file=${data_home}/fiotransfer/fiotransfer.sh
-    source_file=$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")
+    source_file=$(_fiotransfer_canonical_path "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")
     if [[ -n ${XDG_STATE_HOME:-} ]]; then
         state_home=${XDG_STATE_HOME}/fiotransfer
     else
@@ -440,7 +482,7 @@ _fiotransfer_version_report() {
     revision_file=${state_home}/installed-revision
     message_file=${state_home}/installed-commit-message
 
-    if [[ $source_file == "$(readlink -m -- "$install_file" 2>/dev/null)" && -r $revision_file ]]; then
+    if [[ $source_file == "$(_fiotransfer_canonical_path "$install_file" 2>/dev/null)" && -r $revision_file ]]; then
         revision=$(<"$revision_file")
         [[ -r $message_file ]] && IFS= read -r message <"$message_file" || true
         origin='installer-managed'
@@ -865,11 +907,9 @@ _fiotransfer_stage_part() {
     local signal_status=0 saved_int saved_term
 
     if (( header_size > 0 )); then
-        dd if="$input" of="$output" oflag=append conv=notrunc \
-            iflag=skip_bytes,count_bytes skip="$offset" count="$count" status=none &
+        (tail -c "+$((offset + 1))" "$input" | head -c "$count" >>"$output") &
     else
-        dd if="$input" of="$output" iflag=skip_bytes,count_bytes \
-            skip="$offset" count="$count" status=none &
+        (tail -c "+$((offset + 1))" "$input" | head -c "$count" >"$output") &
     fi
     dd_pid=$!
     saved_int=$(trap -p INT)
@@ -878,7 +918,7 @@ _fiotransfer_stage_part() {
     trap 'signal_status=143; kill -TERM "$dd_pid" 2>/dev/null' TERM
 
     while kill -0 "$dd_pid" 2>/dev/null; do
-        current_size=$(stat -c %s -- "$output" 2>/dev/null || printf '%s' "$header_size")
+        current_size=$(_fiotransfer_file_size "$output" 2>/dev/null || printf '%s' "$header_size")
         copied=$((current_size - header_size))
         (( copied < 0 )) && copied=0
         (( copied > count )) && copied=$count
@@ -915,7 +955,7 @@ fioget() {
         return 2
     fi
     local command
-    for command in curl sha256sum; do
+    for command in curl base64 grep head tail awk uname; do
         if ! command -v "$command" >/dev/null 2>&1; then
             printf 'fioget: %s is required\n' "$command" >&2
             return 127
@@ -1037,8 +1077,7 @@ _fiotransfer_download_chain() {
             header_size=$(( ${#magic} + ${#header_previous} + ${#encoded_name} + 4 ))
         fi
         node=${temp_dir}/part.${#parts[@]}
-        if ! dd if="${temp_dir}/node" of="$node" iflag=skip_bytes \
-            skip="$header_size" status=none; then
+        if ! tail -c "+$((header_size + 1))" "${temp_dir}/node" >"$node"; then
             printf 'fioget: could not unpack multipart data\n' >&2
             return 1
         fi
@@ -1056,7 +1095,7 @@ _fiotransfer_download_chain() {
     if [[ -n $requested_output ]]; then
         output=$requested_output
     elif [[ -n $encoded_name ]]; then
-        if ! decoded_name=$(printf '%s' "$encoded_name" | base64 -d 2>/dev/null); then
+        if ! decoded_name=$(printf '%s' "$encoded_name" | _fiotransfer_base64_decode); then
             printf 'fioget: invalid original filename in multipart header\n' >&2
             return 1
         fi
@@ -1096,11 +1135,10 @@ _fiotransfer_download_chain() {
             printf 'fioget: validation failed: downloaded size does not match\n' >&2
             return 1
         fi
-        if ! part_digest=$(sha256sum -- "$assembled"); then
+        if ! part_digest=$(_fiotransfer_sha256 "$assembled"); then
             printf 'fioget: could not validate download\n' >&2
             return 1
         fi
-        part_digest=${part_digest%% *}
         if [[ $part_digest != "$expected_digest" ]]; then
             printf 'fioget: validation failed: downloaded checksum does not match\n' >&2
             return 1
