@@ -1,5 +1,5 @@
 # Source this file from ~/.bashrc to add fiotransfer and fioget.
-# Requires Bash 4+, curl, coreutils, and base64.
+# Requires Bash 4+, curl, coreutils, base64, and sha256sum.
 
 fiotransfer() {
     if (( $# == 0 )); then
@@ -70,14 +70,14 @@ fiotransfer() {
     fi
 
     local command
-    for command in curl base64 dd stat wc date; do
+    for command in curl base64 dd stat wc date sha256sum; do
         if ! command -v "$command" >/dev/null 2>&1; then
             printf 'fiotransfer: %s is required\n' "$command" >&2
             return 127
         fi
     done
 
-    local file_size file_size_mib temp_dir wrapper base_name encoded_name
+    local file_size file_size_mib file_digest temp_dir wrapper base_name encoded_name
     local offset=0 part_number=1 payload_size header_size object_size
     local locator='' provider='' selected_locator='' failed_count
     local upload_path is_complete=0
@@ -87,12 +87,17 @@ fiotransfer() {
         return 1
     fi
     file_size_mib=$(( (file_size + 1048575) / 1048576 ))
+    if ! file_digest=$(sha256sum -- "$file"); then
+        printf 'fiotransfer: could not checksum %s\n' "$file" >&2
+        return 1
+    fi
+    file_digest=${file_digest%% *}
 
     if ! temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/fiotransfer.XXXXXX"); then
         printf 'fiotransfer: could not create a temporary directory\n' >&2
         return 1
     fi
-    trap 'rm -rf -- "$temp_dir"' RETURN
+    trap 'trap - RETURN; rm -rf -- "$temp_dir"' RETURN
     wrapper=${temp_dir}/part
     base_name=${file##*/}
     encoded_name=$(printf '%s' "$base_name" | base64 | tr -d '\n')
@@ -111,14 +116,10 @@ fiotransfer() {
     while (( ! is_complete )); do
         failed_count=0
         while :; do
-            if (( offset == 0 )); then
-                : >"$wrapper"
-                header_size=0
-            else
-                printf 'FIOTRANSFER-CHAIN-V2\n%s\n%s\n\n' \
-                    "$locator" "$encoded_name" >"$wrapper"
-                header_size=$(stat -c %s -- "$wrapper") || return 1
-            fi
+            printf 'FIOTRANSFER-CHAIN-V3\n%s\n%s\n%d\n%s\n\n' \
+                "${locator:--}" "$encoded_name" "$file_size" "$file_digest" \
+                >"$wrapper"
+            header_size=$(stat -c %s -- "$wrapper") || return 1
 
             if ! _fiotransfer_select_provider "$header_size" \
                 "$((file_size - offset))"; then
@@ -131,20 +132,13 @@ fiotransfer() {
                 payload_size=$((file_size - offset))
             fi
 
-            # Preserve the original name and avoid a temporary copy whenever
-            # the complete file fits in the selected service.
-            if (( offset == 0 && payload_size == file_size )); then
-                upload_path=$file
-                object_size=$file_size
-            else
-                if ! _fiotransfer_stage_part "$file" "$wrapper" "$offset" \
-                    "$payload_size" "$header_size" "$part_number"; then
-                    printf 'fiotransfer: failed to prepare part %d\n' "$part_number" >&2
-                    return 1
-                fi
-                upload_path=$wrapper
-                object_size=$((header_size + payload_size))
+            if ! _fiotransfer_stage_part "$file" "$wrapper" "$offset" \
+                "$payload_size" "$header_size" "$part_number"; then
+                printf 'fiotransfer: failed to prepare part %d\n' "$part_number" >&2
+                return 1
             fi
+            upload_path=$wrapper
+            object_size=$((header_size + payload_size))
 
             printf 'Uploading part %d through %s (%d MiB).\n' \
                 "$part_number" "$provider" \
@@ -810,10 +804,13 @@ fioget() {
         printf 'Usage: fioget CODE_OR_URL [OUTPUT_FILE]\n' >&2
         return 2
     fi
-    if ! command -v curl >/dev/null 2>&1; then
-        printf 'fioget: curl is required\n' >&2
-        return 127
-    fi
+    local command
+    for command in curl sha256sum; do
+        if ! command -v "$command" >/dev/null 2>&1; then
+            printf 'fioget: %s is required\n' "$command" >&2
+            return 127
+        fi
+    done
     if (( $# == 2 )); then
         _fiotransfer_download_chain "$1" "$2"
     else
@@ -849,7 +846,8 @@ _fiotransfer_locator_to_url() {
 _fiotransfer_download_chain() {
     local locator=$1 requested_output=${2-} temp_dir node headers magic previous
     local encoded_name='' blank header_size output decoded_name remote_name idx url
-    local header_previous
+    local header_previous expected_size='' expected_digest='' part_size part_digest
+    local assembled
     local -a parts=()
     local -A seen=()
 
@@ -857,7 +855,7 @@ _fiotransfer_download_chain() {
         printf 'fioget: could not create a temporary directory\n' >&2
         return 1
     fi
-    trap 'rm -rf -- "$temp_dir"' RETURN
+    trap 'trap - RETURN; rm -rf -- "$temp_dir"' RETURN
 
     while :; do
         if [[ ${seen[$locator]+yes} ]]; then
@@ -881,26 +879,53 @@ _fiotransfer_download_chain() {
             return 1
         fi
         IFS= read -r magic <"$node" || magic=
-        if [[ $magic != FIOTRANSFER-CHAIN-V1 && $magic != FIOTRANSFER-CHAIN-V2 ]]; then
+        if [[ $magic != FIOTRANSFER-CHAIN-V1 && $magic != FIOTRANSFER-CHAIN-V2 && \
+            $magic != FIOTRANSFER-CHAIN-V3 ]]; then
             parts+=("$node")
             break
         fi
-        {
-            IFS= read -r magic
-            IFS= read -r previous
-            IFS= read -r encoded_name
-            IFS= read -r blank
-        } <"$node"
+        if [[ $magic == FIOTRANSFER-CHAIN-V3 ]]; then
+            {
+                IFS= read -r magic
+                IFS= read -r previous
+                IFS= read -r encoded_name
+                IFS= read -r part_size
+                IFS= read -r part_digest
+                IFS= read -r blank
+            } <"$node"
+        else
+            {
+                IFS= read -r magic
+                IFS= read -r previous
+                IFS= read -r encoded_name
+                IFS= read -r blank
+            } <"$node"
+        fi
         header_previous=$previous
         if [[ $magic == FIOTRANSFER-CHAIN-V1 ]]; then
             previous=f:${previous}
         fi
-        if [[ -z $previous || -n $blank || -z $encoded_name ]] || \
-            ! _fiotransfer_locator_to_url "$previous" >/dev/null; then
+        if [[ -z $previous || -n $blank || -z $encoded_name ]]; then
             printf 'fioget: invalid multipart header\n' >&2
             return 1
         fi
-        header_size=$(( ${#magic} + ${#header_previous} + ${#encoded_name} + 4 ))
+        if [[ $magic == FIOTRANSFER-CHAIN-V3 ]]; then
+            if [[ ! $part_size =~ ^[0-9]+$ || ! $part_digest =~ ^[0-9a-f]{64}$ ]]; then
+                printf 'fioget: invalid validation metadata\n' >&2
+                return 1
+            fi
+            if [[ -n $expected_size && ($part_size != "$expected_size" || \
+                $part_digest != "$expected_digest") ]]; then
+                printf 'fioget: inconsistent validation metadata\n' >&2
+                return 1
+            fi
+            expected_size=$part_size
+            expected_digest=$part_digest
+            header_size=$(( ${#magic} + ${#header_previous} + ${#encoded_name} + \
+                ${#part_size} + ${#part_digest} + 6 ))
+        else
+            header_size=$(( ${#magic} + ${#header_previous} + ${#encoded_name} + 4 ))
+        fi
         node=${temp_dir}/part.${#parts[@]}
         if ! dd if="${temp_dir}/node" of="$node" iflag=skip_bytes \
             skip="$header_size" status=none; then
@@ -908,6 +933,13 @@ _fiotransfer_download_chain() {
             return 1
         fi
         parts+=("$node")
+        if [[ $magic == FIOTRANSFER-CHAIN-V3 && $previous == - ]]; then
+            break
+        fi
+        if ! _fiotransfer_locator_to_url "$previous" >/dev/null; then
+            printf 'fioget: invalid multipart header\n' >&2
+            return 1
+        fi
         locator=$previous
     done
 
@@ -936,17 +968,44 @@ _fiotransfer_download_chain() {
         if [[ -z $output || $output == . || $output == .. ]]; then output=download; fi
     fi
 
-    if ! : >"$output"; then
-        printf 'fioget: could not write %s\n' "$output" >&2
+    if [[ -d $output ]]; then
+        printf 'fioget: output path is a directory: %s\n' "$output" >&2
         return 1
     fi
+
+    assembled=${temp_dir}/assembled
+    : >"$assembled"
     for ((idx=${#parts[@]} - 1; idx >= 0; idx--)); do
-        if ! command cat "${parts[idx]}" >>"$output"; then
+        if ! command cat "${parts[idx]}" >>"$assembled"; then
             printf 'fioget: could not assemble %s\n' "$output" >&2
             return 1
         fi
     done
+    if [[ -n $expected_size ]]; then
+        if [[ $(wc -c <"$assembled") != "$expected_size" ]]; then
+            printf 'fioget: validation failed: downloaded size does not match\n' >&2
+            return 1
+        fi
+        if ! part_digest=$(sha256sum -- "$assembled"); then
+            printf 'fioget: could not validate download\n' >&2
+            return 1
+        fi
+        part_digest=${part_digest%% *}
+        if [[ $part_digest != "$expected_digest" ]]; then
+            printf 'fioget: validation failed: downloaded checksum does not match\n' >&2
+            return 1
+        fi
+    fi
+    if ! mv -- "$assembled" "$output"; then
+        printf 'fioget: could not write %s\n' "$output" >&2
+        return 1
+    fi
     trap - RETURN
     rm -rf -- "$temp_dir"
-    printf 'Downloaded and assembled %d part(s) into %s\n' "${#parts[@]}" "$output"
+    if [[ -n $expected_size ]]; then
+        printf 'Downloaded, validated, and assembled %d part(s) into %s\n' \
+            "${#parts[@]}" "$output"
+    else
+        printf 'Downloaded and assembled %d part(s) into %s\n' "${#parts[@]}" "$output"
+    fi
 }

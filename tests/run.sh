@@ -159,11 +159,11 @@ fi
 grep -q 'FIOTRANSFER_STALL_TIMEOUT_SECONDS must be a positive integer' \
     "$test_dir/invalid-stall.err"
 
-# Leave file.io only twelve bytes of its rolling-hour allowance. Its lower
+# Leave file.io only 128 bytes of its rolling-hour allowance. Its lower
 # measured latency wins the first part; temp.sh must carry the remainder.
-printf '%s fileio 3999999988\n' "$(date +%s)" >"$test_dir/state/usage"
+printf '%s fileio 3999999872\n' "$(date +%s)" >"$test_dir/state/usage"
 upload_output=$(FIOTRANSFER_PROVIDERS=fileio,temp,litterbox,0x0,uguu \
-    FIOTRANSFER_CHUNK_SIZE_BYTES=128 \
+    FIOTRANSFER_CHUNK_SIZE_BYTES=256 \
     fiotransfer "$test_dir/source.bin" 2>"$test_dir/upload.log")
 code=$(printf '%s\n' "$upload_output" | awk '/^Code: / { print $2 }')
 [[ $code == t:t1/part ]]
@@ -172,6 +172,34 @@ grep -q 'Part 2 uploaded through temp' "$test_dir/upload.log"
 
 fioget "$code" "$test_dir/result.bin" >"$test_dir/download.log"
 cmp "$test_dir/source.bin" "$test_dir/result.bin"
+grep -q 'Downloaded, validated, and assembled' "$test_dir/download.log"
+
+# Embedded metadata restores the original name even though temp.sh gives the
+# stored object a provider-generated path.
+mkdir "$test_dir/named-download"
+(
+    cd "$test_dir/named-download"
+    fioget "$code" >/dev/null
+)
+cmp "$test_dir/source.bin" "$test_dir/named-download/source.bin"
+
+# Corruption is rejected before the requested destination is created.
+cp -- "$test_dir/remote/temp.1" "$test_dir/remote/temp.good"
+remote_size=$(wc -c <"$test_dir/remote/temp.1")
+printf X | dd of="$test_dir/remote/temp.1" bs=1 seek="$((remote_size - 1))" \
+    conv=notrunc status=none
+set +e
+fioget "$code" "$test_dir/corrupt.bin" \
+    >"$test_dir/corrupt.out" 2>"$test_dir/corrupt.err"
+corrupt_status=$?
+set -e
+if (( corrupt_status == 0 )); then
+    printf 'Corrupt download unexpectedly passed validation.\n' >&2
+    exit 1
+fi
+grep -q 'validation failed' "$test_dir/corrupt.err"
+test ! -e "$test_dir/corrupt.bin"
+mv -- "$test_dir/remote/temp.good" "$test_dir/remote/temp.1"
 
 # Chains created by releases before provider-aware V2 remain downloadable.
 printf 'legacy-' >"$test_dir/remote/fileio.1"

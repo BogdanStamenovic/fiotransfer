@@ -33,7 +33,7 @@ FIOTRANSFER_PROVIDERS=fileio,temp,litterbox,0x0,uguu fiotransfer archive.zip
 
 - Bash 4 or newer
 - curl
-- GNU coreutils (`base64`, `dd`, `stat`, and `wc`)
+- GNU coreutils (`base64`, `dd`, `sha256sum`, `stat`, and `wc`)
 
 ## Installation
 
@@ -86,6 +86,11 @@ Choose a different output filename:
 fioget Ab3-xY9 received.zip
 ```
 
+New uploads include compact metadata containing the original filename, size,
+and SHA-256 digest. `fioget` restores the correct name even when a provider
+renames the object, and validates the complete download before placing it at
+its destination. An explicitly supplied `OUTPUT_FILE` still takes precedence.
+
 `fioget` also accepts complete HTTPS URLs from supported providers:
 
 ```bash
@@ -113,8 +118,9 @@ probe and timeouts as upload routing; they do not upload data.
 `fiotransfer` sends multipart-form uploads to the providers' public anonymous
 APIs. A short prefix identifies non-file.io codes: `t:` for temp.sh, `l:` for
 Litterbox, `z:` for 0x0.st, and `u:` for Uguu. Existing bare file.io keys
-remain valid. `fioget` resolves the code, follows redirects, and uses the
-service's suggested filename unless an output filename is supplied.
+remain valid. `fioget` resolves the code, follows redirects, and uses embedded
+metadata (or, for older uploads, the service's suggested filename) unless an
+output filename is supplied.
 For temp.sh links it uses the service's POST-based raw-download endpoint
 instead of saving the HTML preview returned by a normal GET request.
 
