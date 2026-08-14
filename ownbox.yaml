@@ -1,0 +1,9 @@
+schema: 1
+name: fiotransfer
+description: 'A light weight cli tool used for uploading and downloading files from anonymous file sharing websites'
+tags: []
+install:
+  platforms:
+  - linux
+  setup: [./install.sh]
+command: fiotransfer
