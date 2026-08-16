@@ -1,9 +1,19 @@
 schema: 1
 name: fiotransfer
-description: 'A light weight cli tool used for uploading and downloading files from anonymous file sharing websites'
-tags: []
+description: Upload files to anonymous file-sharing services and print compact share codes.
+homepage: https://github.com/BogdanStamenovic/fiotransfer
+tags: [files, upload, sharing, cli]
 install:
   platforms:
   - linux
-  setup: [./install.sh]
-command: fiotransfer
+  - darwin
+  - windows
+commands:
+  fiotransfer:
+    linux: ./ownbox.sh fiotransfer
+    darwin: ./ownbox.sh fiotransfer
+    windows: 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\fiotransfer.ps1 fiotransfer'
+  fioget:
+    linux: ./ownbox.sh fioget
+    darwin: ./ownbox.sh fioget
+    windows: 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\fiotransfer.ps1 fioget'

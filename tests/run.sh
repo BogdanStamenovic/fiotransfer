@@ -119,6 +119,16 @@ source "$repo_dir/fiotransfer.sh"
 
 printf 'abcdefghijklmnopqrstuvwxyz0123456789' >"$test_dir/source.bin"
 
+# Ownbox runs this checkout-local entry point from a non-login shell. Verify it
+# forwards arguments without relying on an installer-created command on PATH.
+ownbox_output=$(FIOTRANSFER_PROVIDERS=temp "$repo_dir/ownbox.sh" fiotransfer providers)
+grep -q 'Loaded providers (1)' <<<"$ownbox_output"
+grep -q '^  temp$' <<<"$ownbox_output"
+ownbox_status=0
+"$repo_dir/ownbox.sh" fioget >"$test_dir/ownbox-fioget.out" 2>&1 || ownbox_status=$?
+[[ $ownbox_status == 2 ]]
+grep -q 'Usage: fioget' "$test_dir/ownbox-fioget.out"
+
 # Read-only provider subcommands expose configuration, local quota usage, and
 # the result of the same health probes used by upload routing.
 providers_output=$(FIOTRANSFER_PROVIDERS=temp,fileio fiotransfer providers)
@@ -307,6 +317,7 @@ cp -- "$repo_dir/fiotransfer.sh" "$XDG_DATA_HOME/fiotransfer/fiotransfer.sh"
 mkdir -p "$XDG_STATE_HOME/fiotransfer"
 printf '%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     >"$XDG_STATE_HOME/fiotransfer/installed-revision"
+rm -f -- "$XDG_STATE_HOME/fiotransfer/installed-commit-message"
 sed '1s/$/ (updated)/' "$repo_dir/fiotransfer.sh" >"$test_dir/update-source.sh"
 export MOCK_UPDATE_SOURCE="$test_dir/update-source.sh"
 source "$XDG_DATA_HOME/fiotransfer/fiotransfer.sh"

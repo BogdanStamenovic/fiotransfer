@@ -69,6 +69,23 @@ macOS ships an older Bash. If a compatible Bash is not already available, the
 installer identifies that and prints the Homebrew command needed to install
 one; Homebrew Bash is detected automatically on the next run.
 
+### Ownbox
+
+After adding this repository to your Ownbox catalog, install and run it with:
+
+```bash
+ownbox sync
+ownbox install fiotransfer
+fiotransfer --help
+fiotransfer archive.zip
+```
+
+The Ownbox launchers run both `fiotransfer` and `fioget` directly from its
+managed checkout, so they do not modify your shell profile or depend on
+`~/.local/bin` being on `PATH`. `fiotransfer update` (or `fioget update`) lets
+Ownbox update the shared checkout, while `uninstall` or `remove` removes both
+commands and the checkout together.
+
 ## Usage
 
 Upload a file:
